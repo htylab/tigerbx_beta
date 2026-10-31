@@ -16,7 +16,8 @@ import numpy as np
 OUTPUT_POSTFIXES = ('tbx', 'tbxmask', 'tseg', 'dgm', 'wmh', 'syn', 'ct', 'cgw_pve0', 'cgw_pve1', 'cgw_pve2',
                     'pve_csf', 'pve_gm', 'pve_wm',
                     'hlc', 'CSF', 'GM', 'WM', 'reg', 'rigid', 'Af', 'Fuse', 'SmoothedGM', 'ModulatedGM', 'gdm', 'gdmi',
-                    'affine', 'VXM', 'VFA', 'norm', 'duope', 'duope_disp', 'duope_field')   # reg/Af/Fuse: names used before 0.3
+                    'affine', 'VXM', 'treg', 'VFA', 'norm', 'duope', 'duope_disp', 'duope_field', 'epi2t1',
+                    'epi2mni')   # reg/Af/Fuse: names used before 0.3; VFA: the tReg output up to 0.3.3
 
 
 def _stem(f):

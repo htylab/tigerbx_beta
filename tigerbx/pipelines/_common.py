@@ -14,15 +14,20 @@ _logger = logging.getLogger('tigerbx')
 _logger.addHandler(logging.NullHandler())
 
 
-def batch(name, input, output, gz, verbose, one):
+def batch(name, input, output, gz, verbose, one, exists=None):
     """Run `one(f, ftemplate) -> (images, files)` on every input. A single input returns its images dict (errors
-    raise); several return the list of files dicts of the successful ones (a failure is logged and skipped)."""
+    raise); several return the list of files dicts of the successful ones (a failure is logged and skipped).
+    exists: the postfix of an output whose file marks the input as done; such inputs are skipped (continuing a
+    batch) and left out of the list."""
     files, common_folder = resolve_inputs(input if isinstance(input, list) else [input])
     results, failed = [], []
     for f in tqdm(files, desc=f'tigerbx-{name}', unit='file', disable=(verbose > 0 or len(files) < 2)):
         t = time.time()
         try:
             ftemplate, _ = get_template(f, output, gz, common_folder)
+            if exists and os.path.isfile(ftemplate.replace('@@@@', exists)):
+                _logger.info('%s: outputs exist, skipped', os.path.basename(f))
+                continue
             images, saved = one(f, ftemplate)
         except Exception as exc:                 # noqa: BLE001 - one bad input must not stop a batch
             if len(files) == 1:

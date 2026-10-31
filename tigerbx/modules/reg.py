@@ -107,7 +107,7 @@ def _init_displacement_dict():
         "affine_matrix": None,
         "reference_info": None,
         "dense_warp": None,
-        "VFA_dense_warp": None,
+        "treg_dense_warp": None,
     }
 
 
@@ -161,6 +161,9 @@ def _run_affine_method(state, run_d, args, omodel, result_dict, result_filedict,
     template_data = template_nib.get_fdata()
     tbx_data = state['tbx_data']
 
+    if run_d['affine_type'] == 'C2FViT' and templatereg.model_box(template_nib) is not None:
+        raise ValueError("affine_type='C2FViT' needs a template on the model grid (160 x 224 x 192, 1 mm); "
+                         "use affine_type='numreg' with this template")
     if run_d['affine_type'] == 'C2FViT':
         tbx_data, _ = lib_reg.pad_to_shape(tbx_data, (256, 256, 256))
         tbx_data, _ = lib_reg.crop_image(tbx_data, target_shape=(256, 256, 256))
@@ -187,10 +190,10 @@ def _run_affine_method(state, run_d, args, omodel, result_dict, result_filedict,
     elif run_d['affine_type'] == 'numreg':
         # unclipped template: numreg builds the fixed mask from voxels above the background value
         M = numreg.register(state['tbx_nib'], template_nib, moving_data=tbx_data)
-        # both sampled once from the input grid: _affine cubic (sharper), the VFA input trilinear (as VFA expects)
+        # both sampled once from the input grid: _affine cubic (sharper), the tReg input trilinear (as it expects)
         native = state['native_nib']
         affined = lib_reg.min_max_norm(numreg.resample(native, template_nib, M, order=3))
-        vfa_input = lib_reg.min_max_norm(numreg.resample(native, template_nib, M, order=1))
+        treg_input = lib_reg.min_max_norm(numreg.resample(native, template_nib, M, order=1))
         affine_matrix = {'affine_matrix': {'M': M}}
         state['displacement_dict']['reference_info'] = {'affine': template_nib.affine,
                                                         'shape': tuple(template_nib.shape[:3])}
@@ -204,7 +207,7 @@ def _run_affine_method(state, run_d, args, omodel, result_dict, result_filedict,
         affined = lib_reg.remove_padding(affined, state['pad_width'])
     affine_nib = nib.Nifti1Image(affined, state['fixed_affine'])
     state['affine_nib'] = affine_nib if run_d['affine_type'] == 'C2FViT' else \
-        nib.Nifti1Image(vfa_input, state['fixed_affine'])        # the input of the deformable step
+        nib.Nifti1Image(treg_input, state['fixed_affine'])        # the input of the deformable step
 
     if save_reg_output:
         result_filedict['affine'] = save_nib(affine_nib, ftemplate, 'affine')
@@ -214,16 +217,25 @@ def _run_affine_method(state, run_d, args, omodel, result_dict, result_filedict,
 def _run_vmnet_registration_method(state, args, omodel, result_dict, result_filedict, ftemplate, save_reg_output):
     template_nib = state['template_nib']
     template_data = template_nib.get_fdata()
+    Af_data = state['affine_nib'].get_fdata()
+    box = templatereg.model_box(template_nib)
+    if box is not None:
+        # a template on another grid: VMnet on the model box (the moving image from the input grid through M), its
+        # displacement carried back onto the template grid
+        M = (state['affine_matrix'] or {}).get('affine_matrix', {}).get('M')
+        template_data = templatereg.on_box(template_data, template_nib, box)
+        Af_data = templatereg.treg_input(state['native_nib'], box, M)
 
     fixed_image = template_data.astype(np.float32)[None, ...][None, ...]
     fixed_image = lib_reg.min_max_norm(fixed_image)
-
-    Af_data = state['affine_nib'].get_fdata()
     moving_image = Af_data.astype(np.float32)[None, ...][None, ...]
 
     model_ff = lib_tool.get_model(omodel['reg'])
     output = predict(model_ff, [moving_image, fixed_image], GPU=args.gpu, mode='reg')
     moved, warp = np.squeeze(output[0]), np.squeeze(output[1])
+    if box is not None:
+        warp = templatereg.warp_from_box(warp, box, template_nib)
+        moved = templatereg.warp_on_grid(state['affine_nib'].get_fdata(), warp)
     moved_nib = nib.Nifti1Image(moved, state['fixed_affine'], template_nib.header)
     warp_nib = nib.Nifti1Image(warp, state['fixed_affine'], template_nib.header)
 
@@ -237,16 +249,20 @@ def _run_vmnet_registration_method(state, args, omodel, result_dict, result_file
     state['warp'] = warp
 
 
-def _run_vfa_registration_method(state, args, omodel, result_dict, result_filedict, ftemplate, save_reg_output):
-    """Deformable step 'D': VFA. The ONNX model takes [moving, fixed] (min-max normalised inside the graph) and
+def _run_treg_registration_method(state, args, omodel, result_dict, result_filedict, ftemplate, save_reg_output):
+    """Deformable step 'D': tReg. The ONNX model takes [moving, fixed] (min-max normalised inside the graph) and
     returns a voxel sampling grid; warp = grid - identity. After numreg the output is the input sampled once at
     the affine + warp (cubic); after C2FViT the affine image warped with dense_transform like VMnet's."""
     template_nib = state['template_nib']
     Af_data = state['affine_nib'].get_fdata().astype(np.float32)
-    grid = templatereg.vfa_grid(Af_data, template_nib, omodel['vfa'], args.gpu)
-    identity = np.stack(np.meshgrid(*[np.arange(n, dtype=np.float32) for n in grid.shape[1:]], indexing='ij'))
-    warp = grid - identity
     M = (state['affine_matrix'] or {}).get('affine_matrix', {}).get('M') if state['init_flow'] is None else None
+    if templatereg.model_box(template_nib) is not None:
+        # a template on another grid: tReg on the model box, the displacement carried back (templatereg.treg_warp)
+        warp = templatereg.treg_warp(state['native_nib'], template_nib, M, omodel['treg'], args.gpu)
+    else:
+        grid = templatereg.treg_grid(Af_data, template_nib, omodel['treg'], args.gpu)
+        identity = np.stack(np.meshgrid(*[np.arange(n, dtype=np.float32) for n in grid.shape[1:]], indexing='ij'))
+        warp = grid - identity
     if M is not None:
         # numreg: affine + warp composed, one cubic sample from the input grid (not the affine image warped again)
         moved = lib_reg.min_max_norm(numreg.resample(state['native_nib'], template_nib, M, warp=warp, order=3))
@@ -256,11 +272,11 @@ def _run_vfa_registration_method(state, args, omodel, result_dict, result_filedi
     warp_nib = nib.Nifti1Image(warp, state['fixed_affine'], template_nib.header)
 
     if save_reg_output:
-        fn = save_nib(moved_nib, ftemplate, 'VFA')
-        result_filedict['VFA'] = fn
-    result_dict['VFA'] = moved_nib
+        fn = save_nib(moved_nib, ftemplate, 'treg')
+        result_filedict['treg'] = fn
+    result_dict['treg'] = moved_nib
 
-    state['displacement_dict']["VFA_dense_warp"] = warp
+    state['displacement_dict']["treg_dense_warp"] = warp
     result_dict['dense_warp'] = warp_nib
     state['warp'] = warp
 
@@ -277,7 +293,7 @@ def save_warp_file(path, disp, template_nib, input_nib):
     return save_warp(path, template_nib.affine, template_nib.shape, input_nib.affine, input_nib.shape,
                      affine_M=aff['M'] if isinstance(aff, dict) else None,
                      rigid_M=rig['M'] if isinstance(rig, dict) else None,
-                     vfa_warp=disp.get('VFA_dense_warp'), vxm_warp=disp.get('dense_warp'),
+                     treg_warp=disp.get('treg_dense_warp'), vxm_warp=disp.get('dense_warp'),
                      c2fvit_matrix=aff if c2f else None,
                      c2fvit_init_shift=init_shift(disp['init_flow']) if c2f else None)
 
@@ -308,7 +324,7 @@ def _run_registration_suite(input_nib, tbxmask_nib, ftemplate, run_d, args, omod
         if step == 'D':
             if state['affine_nib'] is None:
                 raise ValueError("Reg plan step 'D' requires a prior 'A' step.")
-            _run_vfa_registration_method(
+            _run_treg_registration_method(
                 state, args, omodel, result_dict, result_filedict, ftemplate, save_reg_output)
             continue
 
@@ -339,7 +355,7 @@ _REG_STEP_TO_FLAG = {
     'R': 'rigid',
     'A': 'affine',
     'V': 'registration',  # VMnet
-    'D': 'vfa',           # VFA (deformable)
+    'D': 'treg',          # tReg (deformable)
 }
 _REG_STEPS = set(_REG_STEP_TO_FLAG.keys())
 
@@ -361,10 +377,10 @@ def _parse_reg_plan(plan):
     plan = _coerce_plan_string(plan)
     steps = list(plan)
     if 'F' in steps:
-        raise ValueError("Reg plan step 'F' (FuseMorph) was removed; use 'AD' (affine + VFA) instead.")
+        raise ValueError("Reg plan step 'F' (FuseMorph) was removed; use 'AD' (affine + tReg) instead.")
     for s in ('N', 'C'):
         if s in steps:
-            raise ValueError(f"Reg plan step '{s}' (ANTs SyN / SyNCC) was removed; use 'AD' (affine + VFA) instead.")
+            raise ValueError(f"Reg plan step '{s}' (ANTs SyN / SyNCC) was removed; use 'AD' (affine + tReg) instead.")
     invalid = [s for s in steps if s not in _REG_STEPS]
     if invalid:
         raise ValueError(
@@ -413,22 +429,24 @@ def _build_run_dict(args):
 
 def _build_omodel(args_model):
     """Registration-only model overrides (BX-owned models are excluded)."""
-    allowed_keys = {'reg', 'vfa', 'affine'}
+    allowed_keys = {'reg', 'treg', 'affine'}
     omodel = {
         'reg': models.VMNET,
-        'vfa': models.VFA,
+        'treg': models.TREG,
         'affine': models.AFFINE_NET,
     }
     if isinstance(args_model, dict):
         for mm in args_model.keys():
-            if mm in allowed_keys:
-                omodel[mm] = args_model[mm]
+            key = 'treg' if mm == 'vfa' else mm        # 'vfa': the key's name up to 0.3.3
+            if key in allowed_keys:
+                omodel[key] = args_model[mm]
     elif isinstance(args_model, str):
         import ast
         model_dict = ast.literal_eval(args_model)
         for mm in model_dict.keys():
-            if mm in allowed_keys:
-                omodel[mm] = model_dict[mm]
+            key = 'treg' if mm == 'vfa' else mm        # 'vfa': the key's name up to 0.3.3
+            if key in allowed_keys:
+                omodel[key] = model_dict[mm]
     return omodel
 
 

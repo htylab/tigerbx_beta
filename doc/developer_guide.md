@@ -70,8 +70,8 @@ tigerbx/
 │   ├── pipeline_api.py  # High-level pipeline dispatcher
 │   ├── pipelines/       # High-level pipelines
 │   │   └── vbm.py       # VBM pipeline (separate from reg)
-│   ├── embed.py         # VFA brain embedding (TSEG-region encoder features)
-│   ├── embed.py         # VFA brain embedding (TSEG-region encoder features)
+│   ├── embed.py         # tReg brain embedding (TSEG-region encoder features)
+│   ├── embed.py         # tReg brain embedding (TSEG-region encoder features)
 │   ├── core/            # Shared utilities (see doc/core/)
 │   │   ├── io.py        # NIfTI I/O, path templates, input resolution
 │   │   ├── onnx.py      # ONNX session management, inference
@@ -185,7 +185,10 @@ Update both before tagging a release. TigerBx follows [Semantic Versioning](http
 ## 7. Adding a New Model
 
 1. Train and export the model to ONNX format (see [models.md](models.md) for the naming and I/O contract), then
-   optimise it with `python -m tigerbx.dev.onnx_optimize model.onnx model_opt.onnx --labels`.
+   optimise it with `python -m tigerbx.dev.onnx_optimize model.onnx model_opt.onnx --labels`. Record how it was
+   built in [model_build.md](model_build.md) (an `_opt` model: its base and options in
+   `tigerbx.dev.build_models.BUILDS`; `python -m tigerbx.dev.build_models` rebuilds every `_opt` model and compares
+   it with the release).
 2. Upload the `.onnx` file to the model hub release on GitHub (`modelhub` tag); a released file is never replaced
    under the same name (a new version gets a new name).
 3. Add its sha256 to `SHA256` in `tigerbx/core/models.py` and make it the default there (the modules and pipelines

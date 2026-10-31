@@ -53,7 +53,7 @@ The pipelines do not read `inspect_summary.csv`; run `tigerbx.inspect` first and
 | Finding | What to do |
 |---------|------------|
 | `skull_stripped` True | the pipelines' `mask='none'` (`--skull-stripped` for `--template`): the brain is the non-zero voxels, no tBX |
-| `contrast` not T1w | `tigerbx.vbm` and `intensity='gnorm'` assume T1; `norm` / `affine` work with `intensity='raw'` (VFA is a T1 model, other contrasts register less well); `template(contrast=...)` builds `template_tseg` only for T1 |
+| `contrast` not T1w | `tigerbx.vbm` and `intensity='gnorm'` assume T1; `norm` / `affine` work with `intensity='raw'` (tReg is a T1 model, other contrasts register less well); `template(contrast=...)` builds `template_tseg` only for T1 |
 | `orientation` not `RAS` | fix the header before processing; every output follows the header |
 | `truncated` | volumes (TIV, VBM) and the template registration miss the cut part |
 | `thick_slices`, `n_volumes` > 1 | 2D / thick-slice data limit segmentation and VBM; of a 4D image only the first volume is processed |

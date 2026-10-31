@@ -59,7 +59,7 @@ def vbm(input=None, output=None, model=None, template=None, reg_plan='AD',
 
 
 # result_dict key of the moved T1 written by each reg plan step
-_STEP_IMAGE = {'R': 'rigid', 'A': 'affine', 'V': 'VXM', 'D': 'VFA'}
+_STEP_IMAGE = {'R': 'rigid', 'A': 'affine', 'V': 'VXM', 'D': 'treg'}
 
 
 def _final_image_key(reg_plan, result_dict):

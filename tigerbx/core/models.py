@@ -10,9 +10,10 @@ TSEG = 'mprage_tseg_v0011_opt.onnx'
 DGM = 'mprage_dgm12_v002_opt.onnx'
 CT = 'mprage_mix_ct.onnx'
 HLC = 'mprage_hlc_v004_opt.onnx'
-# v005: v004's weights; the full-resolution feature matching computes the 27 neighbour similarities one shift at a
-# time instead of building the [27 x C] candidate tensor (much lower peak memory, same grid)
-VFA = 'mprage_reg_v005_vfa.onnx'
+# tReg: the deformable template registration (reg plan step 'D', norm, template; embed uses v001's encoder).
+# v001 = mprage_reg_v005_vfa (the same file; the full-resolution feature matching computes the 27 neighbour
+# similarities one shift at a time: low peak memory), v002 = the same network trained for EPI as well
+TREG = 'mprage_treg_v002.onnx'
 VMNET = 'mprage_reg_v003_train.onnx'          # reg plan V
 AFFINE_NET = 'mprage_affine_v002_train.onnx'  # affine_type 'C2FViT'
 EMBED = 'mprage_embed_v001_vfa.onnx'
@@ -21,6 +22,11 @@ GDM = 'vdm_unet3d_v002_opt.onnx'
 INSPECT = 'inspect_v003.onnx'
 
 SHA256 = {
+    # base exports of the _opt models (tigerbx.dev.build_models rebuilds the _opt files from them)
+    'mprage_aseg43_v0011_allseg.onnx': 'c6163104e44277f8178575ebd62e097f8a02b40063176590b46d2581f7b6dfe1',
+    'mprage_bet_v005_mixsynthv4.onnx': '7571ec093c0a54fa3a81f576063eaab0e3babac790f7946da00a6e23b4feda5d',
+    'mprage_dgm12_v002_mix6.onnx': '2d9d5f09465f1883e6d0fcd4bf1972a450ecb6a49c033471c983b9f109f27d70',
+    'mprage_hlc_v004_resunetplusT2.onnx': '00b56ad4fb3a008237216e07542b4b869c9e7003551d078c062437cc132b5ceb',
     'inspect_v003.onnx': 'afa33a88f814d6805152c2b0ffa6dc12f150ad0f1fc012203028935476c37b21',
     'mprage_affine_v002_train.onnx': '8912e93d8d8ff3c695ac44dabe10c8453787b74c390731d5ed34650d19148b5a',
     'mprage_dgm12_v002_opt.onnx': '77fb816a66ce4ae895f1ca044f34e3255fe4309cbc4d1c428fedf9f96a81a35e',
@@ -30,6 +36,8 @@ SHA256 = {
     'mprage_reg_v003_train.onnx': 'bf2ccf3f9328cf021fb1134b21a1b11d4a33cb9af4856060aa2640aa38d08525',
     'mprage_reg_v004_vfa.onnx': '6a4f4eada8853367919da657716bbbd1ce8b2d378126bd3f8c7770352bb85138',
     'mprage_reg_v005_vfa.onnx': 'b29c4c466e06064b35aa97ec24773aac08b19f16c8923da8cf6c53ae6217a013',
+    'mprage_treg_v001.onnx': 'a47961e51a4a26142700d17b0b2dc60fdff2b2f9dd0dc3977d8bf54a3c849b33',
+    'mprage_treg_v002.onnx': 'e6fd4edc5e6bae3312f557776acd181df1da65f0433f327e737d82c7513fbdb8',
     'mprage_tbx_v005_opt.onnx': '1fdb8ef2c36d1e2dc90e8987e4a9898d6399bb5f3b616d698bb5d192c8e5afa8',
     'mprage_tseg_v0011_opt.onnx': '67b7f553dfd99363f3f89268536986d24d1b79e9ce60760dc4e0ee969f755fe2',
     'vdm_unet3d_v002.onnx': '9357b40da479f4dc85efe2616cab02ad5ffe7f238221070a3769d767a968a97f',

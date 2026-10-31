@@ -1,6 +1,7 @@
 import os
 from os.path import basename, join, isdir, dirname
 import time
+import warnings
 import logging
 import numpy as np
 
@@ -252,87 +253,97 @@ def run_args(args):
         hlc_model_ff = lib_tool.get_model(omodel['HLC'])
         hlc_session = create_session(hlc_model_ff, args.gpu)
 
-    result_all = []
+    result_all, failed = [], []
     result_filedict = dict()
     _pbar = tqdm(input_file_list, desc='tigerbx-hlc', unit='file', disable=(verbose > 0))
     for count, f in enumerate(_pbar, 1):
-        result_dict = dict()
-        result_filedict = dict()
+        try:
+            result_dict = dict()
+            result_filedict = dict()
 
-        _pbar.set_postfix_str(os.path.basename(f))
-        printer(f'{count} Preprocessing :', os.path.basename(f))
-        t = time.time()
-        ftemplate, f_output_dir = get_template(f, output_dir, args.gz, common_folder)
-
-
-        tbxmask_nib = produce_tbxmask(omodel['tbx'], f, GPU=args.gpu, session=tbx_session)
-        input_nib = load_nifti(f)
-        tbx_nib = lib_tool.read_nib(input_nib) * lib_tool.read_nib(tbxmask_nib)
-
-        tbx_nib = nib.Nifti1Image(tbx_nib, input_nib.affine, input_nib.header)
+            _pbar.set_postfix_str(os.path.basename(f))
+            printer(f'{count} Preprocessing :', os.path.basename(f))
+            t = time.time()
+            ftemplate, f_output_dir = get_template(f, output_dir, args.gz, common_folder)
 
 
-        zoom = tbx_nib.header.get_zooms() 
+            tbxmask_nib = produce_tbxmask(omodel['tbx'], f, GPU=args.gpu, session=tbx_session)
+            input_nib = load_nifti(f)
+            tbx_nib = lib_tool.read_nib(input_nib) * lib_tool.read_nib(tbxmask_nib)
 
-        if max(zoom) > 1.1 or min(zoom) < 0.9:
-            tbx_nib111 = resample_voxel(tbx_nib, (1, 1, 1),interpolation='continuous')
-            tbx_nib111 = reorder_img(tbx_nib111, resample='continuous')
-        else:
-            tbx_nib111 = reorder_img(tbx_nib, resample='continuous')
+            tbx_nib = nib.Nifti1Image(tbx_nib, input_nib.affine, input_nib.header)
 
-        tbxmask_nib111 =  resample_to_img(tbxmask_nib, tbx_nib111, interpolation="nearest")
 
-        #print(tbx_nib111.shape, tbx_nib111.get_fdata().dtype, tbx_nib.get_fdata().dtype)
+            zoom = tbx_nib.header.get_zooms() 
 
-        tbx_image = lib_tool.read_nib(tbx_nib111)
-        tbxmask_image = lib_tool.read_nib(tbxmask_nib111)
+            if max(zoom) > 1.1 or min(zoom) < 0.9:
+                tbx_nib111 = resample_voxel(tbx_nib, (1, 1, 1),interpolation='continuous')
+                tbx_nib111 = reorder_img(tbx_nib111, resample='continuous')
+            else:
+                tbx_nib111 = reorder_img(tbx_nib, resample='continuous')
+
+            tbxmask_nib111 =  resample_to_img(tbxmask_nib, tbx_nib111, interpolation="nearest")
+
+            #print(tbx_nib111.shape, tbx_nib111.get_fdata().dtype, tbx_nib.get_fdata().dtype)
+
+            tbx_image = lib_tool.read_nib(tbx_nib111)
+            tbxmask_image = lib_tool.read_nib(tbxmask_nib111)
             
-        image_orig = tbx_image
+            image_orig = tbx_image
 
-        image, xyz6 = crop_cube(image_orig, tbxmask_image, min_size=(160, 160, 160) if args.patch else None)
+            image, xyz6 = crop_cube(image_orig, tbxmask_image, min_size=(160, 160, 160) if args.patch else None)
 
-        mx = np.max(image)
-        if mx > 0:
-            image = image / mx
-        image = image[None, ...][None, ...]
-        printer('Perform HLC model....')
-        heads = _hlc_outputs(hlc_session, hlc_model_ff, image, args.gpu, args.patch, args.save) if hlc_session else {}
+            mx = np.max(image)
+            if mx > 0:
+                image = image / mx
+            image = image[None, ...][None, ...]
+            printer('Perform HLC model....')
+            heads = (_hlc_outputs(hlc_session, hlc_model_ff, image, args.gpu, args.patch, args.save)
+                     if hlc_session else {})
 
 
-        if 'm' in args.save:            
-            fn = save_nib(tbxmask_nib, ftemplate, 'tbxmask')
-            result_dict['tbxmask'] = tbxmask_nib
-            result_filedict['tbxmask'] = fn
-        if 'b' in args.save:
-            imatbx = tbx_nib.get_fdata()
-            if lib_tool.check_dtype(imatbx, input_nib.dataobj.dtype):
-                imatbx = imatbx.astype(input_nib.dataobj.dtype)
+            if 'm' in args.save:            
+                fn = save_nib(tbxmask_nib, ftemplate, 'tbxmask')
+                result_dict['tbxmask'] = tbxmask_nib
+                result_filedict['tbxmask'] = fn
+            if 'b' in args.save:
+                imatbx = tbx_nib.get_fdata()
+                if lib_tool.check_dtype(imatbx, input_nib.dataobj.dtype):
+                    imatbx = imatbx.astype(input_nib.dataobj.dtype)
 
-            tbx_nib = nib.Nifti1Image(imatbx, input_nib.affine, input_nib.header)
+                tbx_nib = nib.Nifti1Image(imatbx, input_nib.affine, input_nib.header)
         
-            fn = save_nib(tbx_nib, ftemplate, 'tbx')
-            result_dict['tbx'] = tbx_nib
-            result_filedict['tbx'] = fn
-        if 'h' in args.save:
-            HLCparc = HLC_decoder(heads['parc'], heads['lr'], heads['dw'])
+                fn = save_nib(tbx_nib, ftemplate, 'tbx')
+                result_dict['tbx'] = tbx_nib
+                result_filedict['tbx'] = fn
+            if 'h' in args.save:
+                HLCparc = HLC_decoder(heads['parc'], heads['lr'], heads['dw'])
 
-            HLCparc = restore_result(image_orig.shape, HLCparc, xyz6).astype(int)
+                HLCparc = restore_result(image_orig.shape, HLCparc, xyz6).astype(int)
 
-            hlc_nib = nib.Nifti1Image(HLCparc, tbx_nib111.affine, tbx_nib111.header)
-            hlc_nib = resample_to_img(hlc_nib,
-            input_nib, interpolation="nearest")
-            # labels go up to 5002: never inherit a uint8 input dtype (nibabel would then scale and merge labels)
-            hlc_nib = nib.Nifti1Image(np.asarray(hlc_nib.dataobj).astype(np.int16), hlc_nib.affine, hlc_nib.header)
-            hlc_nib.header.set_data_dtype(np.int16)
-            fn = save_nib(hlc_nib, ftemplate, 'hlc')
-            result_dict['hlc'] = hlc_nib
-            result_filedict['hlc'] = fn
+                hlc_nib = nib.Nifti1Image(HLCparc, tbx_nib111.affine, tbx_nib111.header)
+                hlc_nib = resample_to_img(hlc_nib,
+                input_nib, interpolation="nearest")
+                # labels go up to 5002: never inherit a uint8 input dtype (nibabel would then scale and merge labels)
+                hlc_nib = nib.Nifti1Image(np.asarray(hlc_nib.dataobj).astype(np.int16), hlc_nib.affine, hlc_nib.header)
+                hlc_nib.header.set_data_dtype(np.int16)
+                fn = save_nib(hlc_nib, ftemplate, 'hlc')
+                result_dict['hlc'] = hlc_nib
+                result_filedict['hlc'] = fn
 
-        printer('Processing time: %d seconds' %  (time.time() - t))
-        if len(input_file_list) == 1:
-            result_all = result_dict
-        else:
-            result_all.append(result_filedict) #storing output filenames
+            printer('Processing time: %d seconds' %  (time.time() - t))
+            if len(input_file_list) == 1:
+                result_all = result_dict
+            else:
+                result_all.append(result_filedict) #storing output filenames
+        except Exception as exc:                 # noqa: BLE001 - one bad input must not stop a batch
+            if len(input_file_list) == 1:
+                raise
+            _logger.warning('FAILED %s: %s: %s', os.path.basename(f), type(exc).__name__, exc)
+            failed.append(f'{f}: {type(exc).__name__}: {exc}')
+    if failed:
+        warnings.warn(f'tigerbx.hlc: {len(failed)} of {len(input_file_list)} inputs failed and were skipped:\n  '
+                      + '\n  '.join(failed), RuntimeWarning, stacklevel=3)
     return result_all
 
 '''

@@ -360,7 +360,7 @@ def val_reg_60(input_dir, output_dir=None, GPU=False,
                debug=False, files_filter=None, template=None,
                tbx_model=None, seg_model=None, plan='AD', affine_type='numreg', **kwargs):
     """Registration Dice on raw60/label60: each label60 map is carried to the template by the subject's own
-    registration (plan, default 'AD' = numreg affine + VFA) and scored against the template tseg (26 structures)."""
+    registration (plan, default 'AD' = numreg affine + tReg) and scored against the template tseg (26 structures)."""
     from tigerbx.core.resample import reorder_img  # lazy import - local resample helper
     column_names = [
         'Left-Cerebral WM',       'Right-Cerebral WM',
@@ -380,7 +380,7 @@ def val_reg_60(input_dir, output_dir=None, GPU=False,
     ffs = resolve_nifti_inputs([join(input_dir, 'raw60', '*.nii.gz')])
     run_model = {}
     if tbx_model: run_model['tbx'] = tbx_model
-    if seg_model: run_model['vfa' if 'D' in plan.upper() else 'reg'] = seg_model
+    if seg_model: run_model['treg' if 'D' in plan.upper() else 'reg'] = seg_model
     run_model = run_model or None
 
     import importlib

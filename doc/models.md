@@ -51,7 +51,7 @@ rewrites each exported GroupNorm / InstanceNorm into ops that ONNX Runtime runs 
 variance, folded affine), adds the `labels` output, and compares both models on a random input (largest logit
 difference, run time). Needs the `onnx` package. For the 0.3.0 tBX and TSEG models it gives 1.2-1.3x faster
 inference and, together with the `labels` output, about 1.7x faster TSEG inference + post-processing, with identical
-masks / labels on real T1w images. Always check the speed: a model with few, small normalisation layers (e.g. VFA
+masks / labels on real T1w images. Always check the speed: a model with few, small normalisation layers (e.g. tReg
 registration) can get slower.
 
 ## Export checklist

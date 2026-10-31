@@ -7,7 +7,7 @@ methods.
 DeepVBM is implemented as a separate high-level pipeline in
 `tigerbx.pipelines.vbm`. See [Pipeline usage](pipelines.md) for
 `tigerbx.vbm(...)`.
-Stand-alone executable for numreg affine + VFA template normalisation (tissue-normalised `_norm`):
+Stand-alone executable for numreg affine + tReg template normalisation (tissue-normalised `_norm`):
 `tigerbx data/ -o out/ --norm`, see [rust/README.md](../rust/README.md).
 
 The registration pipeline was developed by **Pei-Mao Sun**.
@@ -28,7 +28,7 @@ tigerbx.reg(plan, input=None, output=None, model=None,
 | `input`             | `str` or `list` | `None`      | Input NIfTI file, directory, or glob pattern |
 | `output`            | `str`           | `None`      | Output directory; if `None`, saves next to each input file |
 | `model`             | `str` or `dict` | `None`      | Custom model override; `None` uses bundled defaults |
-| `template`          | `str`           | `None`      | Custom template NIfTI path; `None` uses the bundled 1 mm MNI-space brain template (`mni_template.nii.gz`) |
+| `template`          | `str`           | `None`      | Custom template NIfTI path; `None` uses the bundled 1 mm MNI-space brain template (`mni_template.nii.gz`). A custom template keeps its own grid (size, voxel size, position): the outputs and `_warp.npz` are on it. The tReg / VMnet models take 160 × 224 × 192 at 1 mm, so on another grid they run in a box of that size on the template's brain and their displacement is carried back (outside the box: the affine alone); `affine_type='C2FViT'` needs a template on that grid. |
 | `gpu`               | `bool`          | `False`     | Use GPU for inference |
 | `gz`                | `bool`          | `False`     | Force `.nii.gz` output |
 | `save_displacement` | `bool`          | `False`     | Save the registration as `<stem>_warp.npz` (plain arrays, see Notes) for `tigerbx.transform` |
@@ -61,7 +61,7 @@ registration steps to run and in what order.
 |------|------------|-------------|
 | `R`  | Rigid      | Rigid (rotation + translation) registration to template with numreg; no model needed |
 | `A`  | Affine     | Affine registration to template (numreg or C2FViT) |
-| `D`  | VFA        | VFA nonlinear registration (requires prior `A`); recommended |
+| `D`  | tReg       | tReg nonlinear registration (requires prior `A`); recommended |
 | `V`  | VMnet      | VMnet nonlinear registration (requires prior `A`) |
 
 **Rules**
@@ -80,7 +80,7 @@ import tigerbx
 # Affine registration only (numreg)
 tigerbx.reg('A', r'C:\T1w_dir', r'C:\output_dir')
 
-# Affine + VFA nonlinear registration (recommended)
+# Affine + tReg nonlinear registration (recommended)
 tigerbx.reg('AD', r'C:\T1w_dir', r'C:\output_dir')
 
 # Affine (C2FViT) + VMnet nonlinear registration
@@ -89,7 +89,7 @@ tigerbx.reg('AV', r'C:\T1w_dir', r'C:\output_dir', affine_type='C2FViT')
 # Affine + VMnet with a custom template
 tigerbx.reg('AV', r'C:\T1w_dir', r'C:\output_dir', template='template.nii.gz')
 
-# Affine + VFA, save displacement field
+# Affine + tReg, save displacement field
 tigerbx.reg('AD', r'C:\T1w_dir', r'C:\output_dir', save_displacement=True)
 
 # Apply a saved warp field to a new image
@@ -125,15 +125,16 @@ flags.
   deterministic numpy/scipy affine (Mattes MI, symmetric cost, 6/3/1.5 mm pyramid); it replaced the ANTs affine with
   the same accuracy (reg60 0.852 with `AD`, 0.834 with `AV`) and removed the antspyx dependency. `C2FViT` is a fully
   deep-learning affine step
-- **VFA vs VMnet**: VFA (`D`) is more accurate than VMnet (`V`); C2FViT and VMnet were
+- **tReg vs VMnet**: tReg (`D`) is more accurate than VMnet (`V`); C2FViT and VMnet were
   built for the previous MNI152 template and work best with `template` set to that file
-- **Output names**: `_rigid` (R), `_affine` (A), `_VXM` (V, VMnet), `_VFA` (D); before 0.3 the affine and VMnet
-  outputs were `_Af` and `_reg`. `tigerbx.vbm` writes the T1 after the whole plan as `_norm`
+- **Output names**: `_rigid` (R), `_affine` (A), `_VXM` (V, VMnet), `_treg` (D); before 0.3 the affine and VMnet
+  outputs were `_Af` and `_reg`, and up to 0.3.3 the `D` output was `_VFA` (its `_warp.npz` key `vfa_warp` is
+  still read). `tigerbx.vbm` writes the T1 after the whole plan as `_norm`
 - **`_warp.npz`**: plain arrays, `np.load(path)` without pickle (`tigerbx.core.warpfile`): `template_affine`,
   `template_shape`, `input_affine`, `input_shape`, and per step `rigid_M` / `affine_M` (4x4, template world -> input
-  world), `vfa_warp` / `vxm_warp` ((3, X, Y, Z) displacement in template voxels) or `c2fvit_matrix` +
-  `c2fvit_init_shift`. `tigerbx.transform` writes `_rigid`, `_affine`, `_VXM`, `_VFA`; the VBM modulation of a map
-  is the Jacobian determinant of `vfa_warp` (`tigerbx.core.deform.jacobian_determinant`). The pickled `warp.npz` of
+  world), `treg_warp` / `vxm_warp` ((3, X, Y, Z) displacement in template voxels) or `c2fvit_matrix` +
+  `c2fvit_init_shift`. `tigerbx.transform` writes `_rigid`, `_affine`, `_VXM`, `_treg`; the VBM modulation of a map
+  is the Jacobian determinant of `treg_warp` (`tigerbx.core.deform.jacobian_determinant`). The pickled `warp.npz` of
   earlier versions is no longer read: re-run the registration
 - **SyN (`N`) and SyNCC (`C`) were removed** (they were kept for ablations; `AD` is faster and more
   accurate)

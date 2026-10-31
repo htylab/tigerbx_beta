@@ -27,9 +27,9 @@ def test_check_fwhm():
 
 
 def test_final_image_follows_plan_order():
-    rd = dict(affine=1, VFA=2, VXM=3)
+    rd = dict(affine=1, treg=2, VXM=3)
     assert vbm_mod._final_image_key('ADV', rd) == 'VXM'
-    assert vbm_mod._final_image_key('AVD', rd) == 'VFA'
+    assert vbm_mod._final_image_key('AVD', rd) == 'treg'
     assert vbm_mod._final_image_key('A', dict(affine=1)) == 'affine'
 
 

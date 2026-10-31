@@ -28,14 +28,14 @@ def template(input=None, output=None, *, contrast='t1', iters=6, stat='median', 
 
     Each image: brain mask (tBX; ``mask='none'`` for skull-stripped inputs), numreg affine to the bundled template
     (mutual information: any contrast), intensity / brain median. Then
-    ``iters`` rounds: VFA-register every subject to the current template, take the voxel-wise ``stat`` (``'median'``
+    ``iters`` rounds: tReg-register every subject to the current template, take the voxel-wise ``stat`` (``'median'``
     or ``'mean'``) of the warped images, and move it by the inverse of the mean displacement so the template stays
     in the mean frame. The last round samples every subject once from its input grid (affine + warp, cubic).
 
     Outputs in ``output`` (a directory): ``template.nii.gz`` (brain median scaled to the bundled template's),
     ``template_mask.nii.gz`` (majority of the subjects' brain masks), with ``contrast='t1'`` (``labels='auto'``)
     ``template_tseg.nii.gz`` (majority vote of the subjects' TSEG, deep GM from DGM12, inside the mask; so
-    ``template=`` also finds its labels), and ``template_log.json``. VFA is a T1 model: other contrasts build,
+    ``template=`` also finds its labels), and ``template_log.json``. tReg is a T1 model: other contrasts build,
     but a T2 template did not register T2 better than the bundled T1 template. Returns a dict of the template images.
     """
     if stat not in ('median', 'mean'):
@@ -57,13 +57,14 @@ def template(input=None, output=None, *, contrast='t1', iters=6, stat='median', 
     t0 = time.time()
     try:
         subs = _prepare(files, tpl, tmp, mask, want_labels, gpu, model, verbose, log)
-        session = create_session(lib_tool.get_model(model.get('vfa') or templatereg.VFA_MODEL), gpu)
+        treg_model = model.get('treg') or model.get('vfa') or templatereg.TREG_MODEL    # 'vfa': the key up to 0.3.3
+        session = create_session(lib_tool.get_model(treg_model), gpu)
         cur = _stat(np.stack([s['affined'] for s in subs]), stat)            # round 0: affine-only average
         for k in range(1, iters + 1):
             last = k == iters
             warped, masks, tsegs, mean_w = [], [], [], np.zeros((3,) + shape, np.float32)
             for s in tqdm(subs, desc=f'tigerbx-template {k}/{iters}', unit='file', disable=verbose > 0):
-                w = templatereg.vfa_grid(s['vfa_in'], tpl, fixed=cur, session=session) - templatereg.identity_grid(shape)
+                w = templatereg.treg_grid(s['treg_in'], tpl, fixed=cur, session=session) - templatereg.identity_grid(shape)
                 mean_w += w / len(subs)
                 if last:              # one cubic sample from the input grid; masks / labels from it too
                     brain = nib.load(s['brain'])
@@ -108,7 +109,7 @@ def template(input=None, output=None, *, contrast='t1', iters=6, stat='median', 
 
 
 def _prepare(files, tpl, tmp, mask, want_labels, gpu, model, verbose, log):
-    """Per input: brain / mask (/ TSEG) on the input grid in `tmp`, numreg affine M, the VFA input and the affine
+    """Per input: brain / mask (/ TSEG) on the input grid in `tmp`, numreg affine M, the tReg input and the affine
     image on the template grid (intensity / brain median)."""
     subs, failed = [], []
     for i, f in enumerate(tqdm(files, desc='tigerbx-template prep', unit='file', disable=verbose > 0)):
@@ -142,7 +143,7 @@ def _prepare(files, tpl, tmp, mask, want_labels, gpu, model, verbose, log):
             if tseg is not None:
                 s['tseg'] = os.path.join(tmp, f'{i}_tseg.nii')
                 nib.save(tseg, s['tseg'])
-            s['vfa_in'] = templatereg.vfa_input(brain, tpl, M)
+            s['treg_in'] = templatereg.treg_input(brain, tpl, M)
             s['affined'] = (numreg.resample(brain, tpl, M, order=1) / scale).astype(np.float16)
             subs.append(s)
         except Exception as exc:                     # noqa: BLE001 - one bad input must not stop the template

@@ -1,5 +1,5 @@
 //! Registration to the TigerBx template, as `tigerbx.reg('AD')` / the VBM `_norm`:
-//! numreg affine (`_affine`, tBX brain on the template grid), then VFA (`_norm`).
+//! numreg affine (`_affine`, tBX brain on the template grid), then tReg (`_norm`).
 
 use anyhow::{Context, Result};
 use ndarray::{Array3, Ix3};
@@ -84,13 +84,13 @@ fn min_max_norm(x: &Array3<f64>) -> Array3<f64> {
 pub struct RegResult {
     /// numreg affine: tBX brain sampled onto the template (cubic, clipped, from the input grid; the input's units)
     pub affine: Array3<f32>,
-    /// VFA: tBX brain sampled at the affine + VFA warp (cubic, clipped, from the input grid; when VFA ran)
+    /// tReg: tBX brain sampled at the affine + tReg warp (cubic, clipped, from the input grid; when tReg ran)
     pub norm: Option<Array3<f32>>,
     /// world matrix template -> input (fixed -> moving)
     pub matrix: Mat4,
-    /// VFA voxel sampling grid [3, X, Y, Z] on the template grid (when VFA ran)
+    /// tReg voxel sampling grid [3, X, Y, Z] on the template grid (when tReg ran)
     pub grid: Option<Vec<f32>>,
-    /// the tBX mask carried through the same affine + VFA warp (> 0.5), when a mask was given and VFA ran
+    /// the tBX mask carried through the same affine + tReg warp (> 0.5), when a mask was given and tReg ran
     pub norm_mask: Option<Array3<bool>>,
     /// the tBX mask through the affine only (> 0.5), when a mask was given: the brain mask of the gnorm _affine
     pub affine_mask: Option<Array3<bool>>,
@@ -103,7 +103,7 @@ pub fn run_reg(
     mask: Option<&Array3<u8>>,
     header: &NiftiHeader,
     template: &Template,
-    vfa: Option<&mut Session>,
+    treg: Option<&mut Session>,
 ) -> Result<RegResult> {
     // TigerBx reg: tbx = (input x mask).astype(float32); numreg on its reorder_img(continuous)
     let native = Volume { data: brain.mapv(|v| v as f32 as f64), affine: resample::best_affine(header), kind: Kind::Float32 };
@@ -115,15 +115,15 @@ pub fn run_reg(
     // numreg.resample: every output sampled once from the input grid at template voxel -> input voxel
     let v = mat_mul(&mat_mul(&mat_inv(&native.affine), &m), &t.affine);
     let affine_at = |i: usize, j: usize, k: usize| resample::coord(&v, i, j, k);
-    // _affine cubic (clipped; the input's units), the VFA input trilinear (as VFA expects) and min-max
+    // _affine cubic (clipped; the input's units), the tReg input trilinear (as tReg expects) and min-max
     let affined = clip_f32(resample::sample(&native.data, dim, true, affine_at), &native.data);
-    let vfa_input = min_max_norm(&resample::sample(&native.data, dim, false, affine_at).mapv(|x| x as f32 as f64));
+    let treg_input = min_max_norm(&resample::sample(&native.data, dim, false, affine_at).mapv(|x| x as f32 as f64));
 
-    let grid = match vfa {
+    let grid = match treg {
         None => None,
-        Some(session) => Some(run_vfa(session, &vfa_input, &min_max_norm(&t.data))?),
+        Some(session) => Some(run_treg(session, &treg_input, &min_max_norm(&t.data))?),
     };
-    // VFA: affine + warp composed (coordinates = identity + (grid - identity), float32 as TigerBx), one sample
+    // tReg: affine + warp composed (coordinates = identity + (grid - identity), float32 as TigerBx), one sample
     let n = dim.0 * dim.1 * dim.2;
     let warped_at = |g: &[f32]| {
         let g = g.to_vec();
@@ -141,7 +141,7 @@ pub fn run_reg(
     let norm = grid.as_ref().map(|g| {
         clip_f32(resample::sample(&native.data, dim, true, warped_at(g)), &native.data).mapv(|x| x as f32)
     });
-    // the tBX mask through the affine (and the VFA warp when it ran), trilinear from the input grid, > 0.5
+    // the tBX mask through the affine (and the tReg warp when it ran), trilinear from the input grid, > 0.5
     let mask_data = mask.map(|mask| mask.mapv(|v| if v > 0 { 1.0 } else { 0.0 }));
     let affine_mask = mask_data.as_ref().map(|md| resample::sample(md, dim, false, affine_at).mapv(|x| x as f32 > 0.5));
     let norm_mask = match (mask_data.as_ref(), grid.as_ref()) {
@@ -158,8 +158,8 @@ fn clip_f32(x: Array3<f64>, data: &Array3<f64>) -> Array3<f64> {
     x.mapv(|v| (v as f32).clamp(lo, hi) as f64)
 }
 
-/// VFA step 'D': the model maps (moving, fixed) to a voxel sampling grid [3, X, Y, Z].
-pub fn run_vfa(session: &mut Session, moving: &Array3<f64>, fixed: &Array3<f64>) -> Result<Vec<f32>> {
+/// tReg step 'D': the model maps (moving, fixed) to a voxel sampling grid [3, X, Y, Z].
+pub fn run_treg(session: &mut Session, moving: &Array3<f64>, fixed: &Array3<f64>) -> Result<Vec<f32>> {
     let (x, y, z) = moving.dim();
     let mv: Vec<f32> = moving.iter().map(|&v| v as f32).collect();
     let fx: Vec<f32> = fixed.iter().map(|&v| v as f32).collect();
@@ -169,7 +169,7 @@ pub fn run_vfa(session: &mut Session, moving: &Array3<f64>, fixed: &Array3<f64>)
         "fixed" => TensorRef::from_array_view((shape, fx.as_slice()))?,
     ];
     let opts = crate::inference::run_options()?.with_outputs(OutputSelector::no_default().with("grid"));
-    let outputs = session.run_with_options(inputs, &opts).context("VFA inference failed")?;
-    let (_, grid) = outputs["grid"].try_extract_tensor::<f32>().context("Failed to extract the VFA grid")?;
+    let outputs = session.run_with_options(inputs, &opts).context("tReg inference failed")?;
+    let (_, grid) = outputs["grid"].try_extract_tensor::<f32>().context("Failed to extract the tReg grid")?;
     Ok(grid.to_vec())
 }

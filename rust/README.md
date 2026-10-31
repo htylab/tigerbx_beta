@@ -14,13 +14,13 @@ that plane whatever the floating-point rounding of the affine inverse; a voxel o
 other label (float32 / float64 arithmetic of a near tie).
 
 Registration: a Rust port of numreg (Mattes MI, symmetric cost, 6 / 3 / 1.5 mm pyramid, multi-start L-BFGS) gives
-`_affine` (tBX brain on the template grid, min-max normalised), then VFA (`mprage_reg_v005_vfa`) gives `_norm`.
-As in Python, `_affine` and `_norm` (affine + VFA warp composed) are sampled once from the input grid with a cubic
-B-spline clipped to the input range, the VFA input trilinearly; with the same matrix and warp they match
+`_affine` (tBX brain on the template grid, min-max normalised), then tReg (`mprage_treg_v002`) gives `_norm`.
+As in Python, `_affine` and `_norm` (affine + tReg warp composed) are sampled once from the input grid with a cubic
+B-spline clipped to the input range, the tReg input trilinearly; with the same matrix and warp they match
 `tigerbx.core.numreg.resample` within 5e-6.
 It cannot be bit-identical to numreg (another random generator for the 1.5 mm sample subset, another line search);
 on a reg60 subset the template-space Dice of carried labels is 0.7217 vs 0.7218 (affine) and 0.8451 vs 0.8452
-(affine + VFA), image correlation >= 0.9993.
+(affine + tReg), image correlation >= 0.9993.
 
 Template (`--template`, runs on its own): a port of `tigerbx.template` (same steps, options, outputs and
 template_log.json). Its affines come from the numreg port, so the template is very close to, not identical with,
@@ -33,7 +33,7 @@ everything else. The summary matches Python cell for cell (`tests/rust_python_pa
 
 DuoPE (`--duope`, runs on its own, no model): a port of `tigerbx.duope` (same model, steps, constants, sidecar
 handling, outputs and `duope_summary.csv` columns; `tigerbx/core/duope.py`). The inputs are forward / reverse pairs;
-`--series` (one pair), `--pe`, `--readout`, `--series-pe`, `--no-series-align`, `--joint auto|yes|no`, `--save-field`,
+`--series` (one pair), `--pe`, `--readout`, `--series-pe`, `--no-series-align`, `--joint auto|yes|no`, `--alpha`, `--max-mm`, `--save-field`,
 `--save-disp` as the Python arguments. 4D inputs are read and written volume by volume (a 657-volume BOLD series:
 0.2 GB). Against Python on real pairs (AP / PA and LR / RL, 3D / 4D, joint motion, series on the same and on another
 grid) the displacement differs by 0.001-0.003 voxel on average (p99 <= 0.05), the corrected images by <= 0.15%
@@ -41,15 +41,24 @@ grid) the displacement differs by 0.001-0.003 voxel on average (p99 <= 0.05), th
 floating-point order, numreg's line search). Its rigid registration is `numreg::register_with` (dof 6, NCC, given
 masks); `register` (the template affine) is unchanged, bit for bit.
 
+dwimc (`--dwimc`, runs on its own, no model): a port of `tigerbx.dwimc` (same model, steps, constants and outputs:
+`<input>_dwimc`, `.bval`, `.bvec`, `.csv`; `tigerbx/core/dwimc.py`). The inputs are DWI series with `.bval` / `.bvec`
+sidecars; `--reverse` (reversed-PE b0s: one for all inputs or one per input) or `--field` (Hz, with the readout time),
+`--pe`, `--readout`, `--ec-order 1|2`, `--dwimc-iters` as the Python arguments; `-j` threads. The volumes run in
+parallel; the field (DuoPE) uses at most 8 threads (its fine-grained loops only lose time with more). Against Python on
+simulated series with known motion and eddy currents the volume-to-volume error is the same (0.066 vs 0.068 mm on 64
+directions); the position of all diffusion-weighted volumes relative to the b0s differs by up to 0.06 mm; not bit for
+bit (floating-point order, spline boundaries). About 3x faster than Python on the same cores.
+
 `_norm` / `--affine` `_affine` intensities (`--intensity`, as `tigerbx.norm(intensity=...)`): `raw` (default; the
 input's units, any contrast), `minmax` ([0, 1]) or `gnorm`, a port of `tigerbx.core.tissuenorm.tissue_norm` (prior
 mode: GMM with the template tissue priors + bias field; background 0, CSF 1/3, GM 2/3, WM 1). `-A` alone writes the
 min-max `_affine` of `tigerbx.reg('A')`. For gnorm the brain is the tBX mask carried
-through the same affine + VFA warp (oblique inputs leave cubic-resampling ringing of ~1e-40 to 1e-3 outside the
+through the same affine + tReg warp (oblique inputs leave cubic-resampling ringing of ~1e-40 to 1e-3 outside the
 brain, so `img > 0` is not the brain). On a reg60 subset the peaks match the Python `tissue_norm` (same mask)
 within 6.4e-4 relative and the voxel values within 5e-4. T1 only: when the peaks are not ordered CSF < GM < WM
 (T2, PD, ...) `_norm` falls back to img / p99 of the brain with a warning, and the batch goes on.
-`_norm` comes with `_warp.npz`, the registration as plain arrays (affine `affine_M` + VFA `vfa_warp`, TigerBx
+`_norm` comes with `_warp.npz`, the registration as plain arrays (affine `affine_M` + tReg `treg_warp`, TigerBx
 `core.warpfile`), which `tigerbx.transform` and `tigerbx.norm` share.
 
 Prebuilt executables: the `exe` GitHub workflow builds Linux (glibc 2.28+, x64) and macOS (arm64) zips with the
@@ -62,7 +71,7 @@ present), as workflow artifacts on every change under `rust/` and attached to th
 
 ```bash
 mkdir -p models
-for m in mprage_tbx_v005_opt mprage_tseg_v0011_opt mprage_dgm12_v002_opt mprage_reg_v005_vfa inspect_v003; do
+for m in mprage_tbx_v005_opt mprage_tseg_v0011_opt mprage_dgm12_v002_opt mprage_treg_v002 inspect_v003; do
   curl -L -o models/$m.onnx https://github.com/htylab/tigerbx/releases/download/modelhub/$m.onnx
 done
 cargo build --release
@@ -83,18 +92,19 @@ is used) shows the version, the library, the threads and the embedded models, an
 tigerbx T1w.nii.gz                      # no option: _tbx next to the input
 tigerbx T1w.nii.gz --seg                # pipeline tBX + TSEG: _tbx, _tseg (deep GM from DGM12)
 tigerbx T1w.nii.gz --affine             # pipeline affine-only normalisation: _tbx, _affine, _warp.npz
-tigerbx T1w.nii.gz --norm               # pipeline template normalisation (affine + VFA): _tbx, _norm, _warp.npz
+tigerbx T1w.nii.gz --norm               # pipeline template normalisation (affine + tReg): _tbx, _norm, _warp.npz
 tigerbx T1w.nii.gz --all                # --seg + --norm: _tbx, _tseg, _norm, _warp.npz
 tigerbx data/ -o out/ --inspect        # pipeline inspect: inspect_summary.csv (--detail: every value)
 tigerbx data/ -o tpl/ --template       # pipeline template of the inputs (--iters 6, --stat median, --skull-stripped,
                                        #   --contrast t1, --labels auto)
 tigerbx --duope ap.nii.gz pa.nii.gz -o out/ --series bold.nii.gz   # pipeline duope: <input>_duope, duope_summary.csv
 tigerbx --duope ap.nii.gz pa.nii.gz --pe AP --readout 0.05 --save-field  # no JSON sidecars; + _duope_field (Hz)
+tigerbx --dwimc dwi.nii.gz -o out/ --reverse pa.nii.gz  # pipeline dwimc: <input>_dwimc, .bval, .bvec, .csv
 tigerbx data/ -o out/ --seg -m          # output options add to a pipeline: + _tbxmask
 tigerbx data/*.nii.gz -o out/ -m        # single outputs: -b _tbx, -m _tbxmask, -t _tseg, -d _dgm, -A _affine, -n _norm
 tigerbx data/ -o out/ -t -A -j 8        # TSEG + _affine only, 8 intra-op threads (default: 70% of the available CPUs)
 tigerbx data/ -o out/ --norm --intensity gnorm  # T1 tissue intensities (CSF 1/3, GM 2/3, WM 1); raw (default) or minmax
-tigerbx T1w.nii.gz --tseg-model other_tseg.onnx   # other models (--tbx-/--tseg-/--dgm-/--vfa-/--inspect-model)
+tigerbx T1w.nii.gz --tseg-model other_tseg.onnx   # other models (--tbx-/--tseg-/--dgm-/--treg-/--inspect-model)
 tigerbx data/ -o out/ --seg -g         # GPU (see below)
 tigerbx --check -g                      # version, ONNX Runtime library, threads, GPU, embedded models
 ```
@@ -117,7 +127,7 @@ Earlier outputs (`_tbx`, `_tbxmask`, `_tseg`, `_dgm`, `_affine`, `_norm`) in an 
 batch continues.
 
 `TIGERBX_DUMP_REG=<dir>` also writes `<stem>_M.txt` (4x4 world matrix template -> input) and `<stem>_grid.f32`
-(VFA voxel sampling grid, float32 [3, 160, 224, 192]) for validation.
+(tReg voxel sampling grid, float32 [3, 160, 224, 192]) for validation.
 
 Originally developed as a separate repository (htylab/rustbx, the former name of this executable); see the TigerBx license.
 The release zips also carry `THIRD_PARTY_LICENSES.txt`: the license and notice files of the Rust crates compiled into the

@@ -1,6 +1,6 @@
-"""VFA brain embedding: regional features of a T1w image for downstream models.
+"""tReg brain embedding: regional features of a T1w image for downstream models.
 
-Per input: tBX + TSEG (one bx call) -> numreg affine to the bundled MNI-space template -> VFA encoder (levels 1-2,
+Per input: tBX + TSEG (one bx call) -> numreg affine to the bundled MNI-space template -> tReg encoder (levels 1-2,
 the registration model's own encoder) -> mean feature of every TSEG structure (37 structures, the deprecated labels
 are left out) -> ``<stem>_embed.npz``:
 
@@ -135,7 +135,7 @@ def _save_summary(summary_dir, rows):
 
 
 def embed(input=None, output=None, model=None, gpu=False, verbose=0):
-    """VFA brain embedding of T1w images (see module docstring for the ``<stem>_embed.npz`` contents).
+    """tReg brain embedding of T1w images (see module docstring for the ``<stem>_embed.npz`` contents).
 
     A failing input is logged, gets ``<stem>_embedfail.log`` and is skipped (a single input raises);
     ``embed_summary.csv`` in the output folder lists status, TIV and image quality per input.

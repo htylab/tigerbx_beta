@@ -20,7 +20,7 @@ use crate::resample::{cubic_at, linear_transform, mat_inv, mat_mul, spline_coeff
 
 pub const ALPHA: f64 = 0.15;
 pub const SHELL_EPS: f64 = 0.05;
-const MAX_MM: f64 = 3.5;
+pub const MAX_MM: f64 = 3.5;
 const DIPOLE_MM: f64 = 4.0;
 const JOINT_MM: f64 = 1.0;
 const JOINT_DEG: f64 = 1.0;
@@ -120,7 +120,7 @@ fn at(dims: Shape, i: usize, j: usize, k: usize, o: (isize, isize, isize)) -> Op
 }
 
 /// scipy binary_erosion / binary_dilation (6-connected structure, border 0), `iters` times.
-fn erode(m: &Array3<bool>, iters: usize) -> Array3<bool> {
+pub(crate) fn erode(m: &Array3<bool>, iters: usize) -> Array3<bool> {
     let mut cur = m.clone();
     for _ in 0..iters {
         let d = cur.dim();
@@ -139,7 +139,7 @@ pub fn dilate(m: &Array3<bool>, iters: usize) -> Array3<bool> {
 }
 
 /// scipy binary_fill_holes (6-connected background reached from the border stays background).
-fn fill_holes(m: &Array3<bool>) -> Array3<bool> {
+pub(crate) fn fill_holes(m: &Array3<bool>) -> Array3<bool> {
     let d = m.dim();
     let mut reached = Array3::from_elem(d, false);
     let mut stack = Vec::new();
@@ -525,7 +525,7 @@ fn gauss_newton(ia: &A3, ip: &A3, mut d: A3, prior: &Prior, iters: usize, cg_ite
 }
 
 /// Gauss-Newton on d (full-grid voxels, normalised images a / p) at block-mean level f.
-fn refine(a: &A3, p: &A3, d0: &A3, f: usize, zooms: V3, iters: usize) -> A3 {
+fn refine(a: &A3, p: &A3, d0: &A3, f: usize, zooms: V3, iters: usize, alpha: f64) -> A3 {
     let (mut ia, mut ip) = (down(a, f), down(p, f));
     let d = down(d0, f) / f as f64;
     // smooth intensity ratio of the two unwarped images (coil / gain differences), split between the scans
@@ -541,7 +541,7 @@ fn refine(a: &A3, p: &A3, d0: &A3, f: usize, zooms: V3, iters: usize) -> A3 {
         *a /= r.sqrt();
         *p *= r.sqrt();
     });
-    let prior = Prior::new(shell_weight(&correct(&ia, &d), &correct(&ip, &d.mapv(|v| -v))), ALPHA);
+    let prior = Prior::new(shell_weight(&correct(&ia, &d), &correct(&ip, &d.mapv(|v| -v))), alpha);
     upsample(&gauss_newton(&ia, &ip, d, &prior, iters, 15), a.dim(), f)
 }
 
@@ -847,7 +847,7 @@ fn move_img(img: &A3, aff: &Mat4, m: &Mat4) -> A3 {
 
 /// scipy map_coordinates(data, c, order=1, mode='nearest') at one point.
 #[inline]
-fn linear_nearest(data: &A3, c: &V3) -> f64 {
+pub(crate) fn linear_nearest(data: &A3, c: &V3) -> f64 {
     let d = data.dim();
     let n = [d.0, d.1, d.2];
     let mut i0 = [0usize; 3];
@@ -886,7 +886,7 @@ struct Joint {
 }
 
 impl Joint {
-    fn new(a: &A3, p: &A3, aff: &Mat4, d0: &A3, m0: &Mat4, f: usize) -> Joint {
+    fn new(a: &A3, p: &A3, aff: &Mat4, d0: &A3, m0: &Mat4, f: usize, alpha: f64) -> Joint {
         let (ia, ip) = (down(a, f), down(p, f));
         let mut s = [[0.0; 4]; 4];
         for i in 0..3 {
@@ -904,7 +904,7 @@ impl Joint {
         let w = matrix_to_rotvec(&rot3(m0));
         let t = shift_of(m0, &c);
         let ci = correct(&ia, &d);
-        let prior = Prior::new(shell_weight(&ci, &ci), ALPHA);
+        let prior = Prior::new(shell_weight(&ci, &ci), alpha);
         Joint { inv: mat_inv(&affl), ia, ip, d, xw, c, free, theta: [w[0], w[1], w[2], t[0], t[1], t[2]], prior }
     }
 
@@ -1157,10 +1157,10 @@ pub struct Info {
     pub joint: bool,
 }
 
-fn final_level(zooms: V3) -> usize {
+fn final_level(zooms: V3, max_mm: f64) -> usize {
     let zmin = zooms.iter().cloned().fold(f64::INFINITY, f64::min);
     let mut f = 1;
-    while zmin * (f * 2) as f64 <= MAX_MM {
+    while zmin * (f * 2) as f64 <= max_mm {
         f *= 2;
     }
     f
@@ -1178,7 +1178,7 @@ fn transpose(a: &A3, o: [usize; 3]) -> A3 {
 /// Displacement d (voxels along `pe_axis`; the forward scan, positive polarity, is unwarped by fwd(x + d e)) and the
 /// rigid motion M (forward world -> reverse world) of a forward / reverse pair on one grid. joint: None = auto
 /// (field + motion jointly when the motion exceeds 1 mm / 1 degree).
-pub fn estimate(fwd: &A3, rev: &A3, aff: &Mat4, pe_axis: usize, joint: Option<bool>) -> (A3, Mat4, Info) {
+pub fn estimate(fwd: &A3, rev: &A3, aff: &Mat4, pe_axis: usize, joint: Option<bool>, alpha: f64, max_mm: f64) -> (A3, Mat4, Info) {
     let t0 = std::time::Instant::now();
     let mask = head_mask(fwd, rev);
     let o = swap(pe_axis);
@@ -1213,7 +1213,7 @@ pub fn estimate(fwd: &A3, rev: &A3, aff: &Mat4, pe_axis: usize, joint: Option<bo
     for i in 0..3 {
         aff_c[i][3] = (0..3).map(|j| aff_t[i][j] * lo[j] as f64).sum::<f64>() + aff_t[i][3];
     }
-    let f = final_level(zooms);
+    let f = final_level(zooms, max_mm);
     let fc = fa.slice(sl).to_owned();
     let rc = ra.slice(sl).to_owned();
     let mkc = mk.slice(sl).to_owned();
@@ -1227,20 +1227,20 @@ pub fn estimate(fwd: &A3, rev: &A3, aff: &Mat4, pe_axis: usize, joint: Option<bo
     let (a, p) = normalise(&fc, &rc);
     let start = dipole_start(&a, &p, zooms, b);
     lap_t("dipole start");
-    let mut d = refine(&a, &p, &start, f, zooms, 8);
+    let mut d = refine(&a, &p, &start, f, zooms, 8, alpha);
     lap_t("refine");
     let mut m = rigid_motion(&correct(&fc, &d), &correct(&rc, &d.mapv(|v| -v)), &aff_c, &mkc, pe_world);
     lap_t("rigid motion");
     let (mm, deg) = motion_size(&m, &mask_centre(&mkc, &aff_c));
     let use_joint = joint.unwrap_or(deg > JOINT_DEG || mm > JOINT_MM);
     if use_joint {
-        let (dj, mj) = Joint::new(&a, &p, &aff_c, &d, &m, f).run(8);
+        let (dj, mj) = Joint::new(&a, &p, &aff_c, &d, &m, f, alpha).run(8);
         d = upsample(&dj, a.dim(), f);
         m = mj;
     } else {
         let moved = move_img(&ra, &aff_t, &m).slice(sl).to_owned();
         let (a, p) = normalise(&fc, &moved);
-        d = refine(&a, &p, &d, f, zooms, 5);
+        d = refine(&a, &p, &d, f, zooms, 5, alpha);
     }
     lap_t(if use_joint { "joint" } else { "second refine" });
     // back onto the whole grid, edge padded
@@ -1387,7 +1387,7 @@ pub(crate) mod tests {
     fn estimate_recovers_the_displacement() {
         let (u, d, inside) = phantom();
         let (fwd, rev) = (distort(&u, &d), distort(&u, &d.mapv(|v| -v)));
-        let (est, _, info) = estimate(&fwd, &rev, &aff(), 1, None);
+        let (est, _, info) = estimate(&fwd, &rev, &aff(), 1, None, ALPHA, MAX_MM);
         let (e, e0) = (mae(&est, &d, &inside), mae(&A3::zeros(SHAPE), &d, &inside));
         assert!(e < 0.15 && e0 > 0.15, "error {e:.3}, uncorrected {e0:.3}");
         assert!(info.motion_mm < 0.5 && !info.joint);
@@ -1397,7 +1397,7 @@ pub(crate) mod tests {
         for r in at.iter_mut() {
             r.swap(0, 1);
         }
-        let (est_t, _, _) = estimate(&t(&fwd), &t(&rev), &at, 0, None);
+        let (est_t, _, _) = estimate(&t(&fwd), &t(&rev), &at, 0, None, ALPHA, MAX_MM);
         let ins_t = inside.clone().permuted_axes([1, 0, 2]).as_standard_layout().into_owned();
         assert!(mae(&est_t, &t(&d), &ins_t) < 0.15);
     }

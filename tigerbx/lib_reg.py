@@ -7,7 +7,7 @@ import sys
 from types import SimpleNamespace
 from tigerbx.core.io import get_template as build_output_template, save_nib
 from tigerbx.core.spatial import crop_image, pad_to_shape, remove_padding
-from tigerbx.core.resample import resample_img, reorder_img, resample_voxel
+from tigerbx.core.resample import reorder_img, resample_voxel
 from scipy.ndimage import gaussian_filter
 from tigerbx.core import numreg
 from tigerbx.core.warp import affine_transform, dense_transform
@@ -26,7 +26,6 @@ elif __file__:
     
 def get_template(template_ff):
     mni_template = nib.load(join(application_path, 'template', 'mni_template.nii.gz'))
-    mni_affine = mni_template.affine
     
     if template_ff:
         full_path = join(application_path, 'template', template_ff)
@@ -34,10 +33,9 @@ def get_template(template_ff):
             full_path = template_ff
         
         if isfile(full_path):
-            user_template_nib = nib.load(full_path)
-            #resampled_template = resample_voxel(user_template_nib, (1, 1, 1), (256, 256, 256))
-            resampled_template = resample_img(user_template_nib, target_affine=mni_affine, target_shape=[160, 224, 192])
-            return resampled_template
+            # its own grid (size, voxels, position): the outputs are on it; the fixed-size models (tReg, VMnet)
+            # run in a box on it (core.templatereg.model_box)
+            return nib.load(full_path)
         else:
             raise FileNotFoundError("Template file does not exist.")
     else:
@@ -47,7 +45,6 @@ def get_template(template_ff):
 
 def get_template_seg(template_ff):
     mni_template = nib.load(join(application_path, 'template', 'mni_template_tseg.nii.gz'))
-    mni_affine = mni_template.affine
 
     if template_ff:
         template_seg_ff = template_ff.replace('.nii', '_tseg.nii')
@@ -56,9 +53,7 @@ def get_template_seg(template_ff):
             full_path = template_seg_ff
         
         if isfile(full_path):
-            user_template_nib = nib.load(full_path)
-            resampled_template = resample_img(user_template_nib, target_affine=mni_affine, target_shape=[160, 224, 192], interpolation='nearest')
-            return resampled_template
+            return nib.load(full_path)                       # its own grid, as get_template
         else:
             raise FileNotFoundError("Template file does not exist.")
     else:
@@ -83,13 +78,13 @@ def apply_gaussian_smoothing(image, fwhm):
 
 def transform(image_path, warp_path, output_dir=None, GPU=False, interpolation='nearest'):
     """Apply a registration file (_warp.npz, core.warpfile) to an image on the input grid: writes _rigid /
-    _affine / _VXM / _VFA (the steps the file holds) in template space."""
+    _affine / _VXM / _treg (the steps the file holds) in template space."""
     w = load_warp(warp_path)
     order = 0 if interpolation in ('nearest', 'nearestNeighbor') else 1
     ref = SimpleNamespace(affine=w['template_affine'], shape=tuple(int(n) for n in w['template_shape']))
     if 'affine_M' not in w and 'c2fvit_matrix' not in w and 'rigid_M' not in w:
         raise ValueError(f'{warp_path} holds no rigid or affine registration.')
-    if ('vfa_warp' in w or 'vxm_warp' in w) and 'affine_M' not in w and 'c2fvit_matrix' not in w:
+    if ('treg_warp' in w or 'vxm_warp' in w) and 'affine_M' not in w and 'c2fvit_matrix' not in w:
         raise ValueError(f'{warp_path}: a dense warp needs the affine registration, which is missing.')
 
     ftemplate, _ = build_output_template(image_path, output_dir, True)   # ..._@@@@.nii.gz
@@ -106,7 +101,7 @@ def transform(image_path, warp_path, output_dir=None, GPU=False, interpolation='
             save(numreg.resample(native_nib, ref, w['rigid_M'], order=order, data=data), 'rigid')
         if 'affine_M' in w:
             save(numreg.resample(native_nib, ref, w['affine_M'], order=order, data=data), 'affine')
-            for key, name in (('vxm_warp', 'VXM'), ('vfa_warp', 'VFA')):
+            for key, name in (('vxm_warp', 'VXM'), ('treg_warp', 'treg')):
                 if key in w:
                     save(numreg.resample(native_nib, ref, w['affine_M'], warp=w[key], order=order, data=data), name)
         return
@@ -121,6 +116,6 @@ def transform(image_path, warp_path, output_dir=None, GPU=False, interpolation='
     affined = remove_padding(affine_transform(vol, w['c2fvit_init_shift'], w['c2fvit_matrix'], interpolation),
                              pad_width)
     save(affined, 'affine')
-    for key, name in (('vxm_warp', 'VXM'), ('vfa_warp', 'VFA')):
+    for key, name in (('vxm_warp', 'VXM'), ('treg_warp', 'treg')):
         if key in w:
             save(dense_transform(affined, w[key], interpolation), name)

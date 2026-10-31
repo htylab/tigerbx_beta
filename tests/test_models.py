@@ -18,6 +18,13 @@ def test_every_default_model_has_a_sha256():
     assert all(re.fullmatch('[0-9a-f]{64}', h) for h in models.SHA256.values())
 
 
+def test_every_opt_model_has_a_build():
+    from tigerbx.dev import build_models
+    opt = {k for k, v in vars(models).items() if k.isupper() and isinstance(v, str) and v.endswith('_opt.onnx')}
+    assert opt == set(build_models.BUILDS)
+    assert all(base in models.SHA256 for base, _, _ in build_models.BUILDS.values())
+
+
 def test_executable_models_are_release_models():
     text = open(join(dirname(dirname(__file__)), '.github', 'workflows', 'exe.yml')).read()
     embedded = re.search(r'MODELS: "([^"]+)"', text).group(1).split()

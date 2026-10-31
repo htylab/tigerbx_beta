@@ -43,15 +43,17 @@ def merge_dgm(tseg, dgm):
 
 
 def seg(input=None, output=None, *, merge_dgm=True, save_tbx=True, save_tissue=False, gpu=False, gz=True,
-        model=None, verbose=0):
+        model=None, resume=False, verbose=0):
     """Segmentation (executable ``--seg``): tBX -> TSEG (+ DGM12) -> ``_tseg`` (input grid; label numbers follow
     FreeSurfer, 99 = Unlabeled-Intracranial) and ``_tbx`` (``save_tbx``). With ``merge_dgm`` (default) the 12
     deep-GM structures come from DGM12, more accurate there (seg18 0.8178 vs 0.8129); ``merge_dgm=False`` keeps
     the TSEG model output (``tigerbx.run('t')``). ``save_tissue=True`` adds the CSF / GM / WM partial-volume maps
     computed from the T1 and this TSEG (``_pve_csf``, ``_pve_gm``, ``_pve_wm``; core.cgw, T1 only).
 
-    model: {'tbx': ..., 'tseg': ..., 'dgm': ...} overrides. Returns the images dict for a single input, otherwise a
-    list of files dicts.
+    model: {'tbx': ..., 'tseg': ..., 'dgm': ...} overrides. resume: skip inputs whose ``_tseg`` is already
+    there (continuing a batch; they are left out of the list, as ``tigerbx.run(continue_=True)``). Returns the
+    images dict for a single input, otherwise a list of files dicts (a failing input is logged and skipped, a warning
+    lists them).
     """
     def one(f, ftemplate):
         r = bx_run(('bmtd' if merge_dgm else 'bmt') + ('g' if gpu else ''), f, output=None, model=model, verbose=0,
@@ -77,7 +79,7 @@ def seg(input=None, output=None, *, merge_dgm=True, save_tbx=True, save_tissue=F
                 saved[key] = save_nib(images[key], ftemplate, key)
         return images, saved
 
-    return _common.batch('seg', input, output, gz, verbose, one)
+    return _common.batch('seg', input, output, gz, verbose, one, exists='tseg' if resume else None)
 
 
 _merge_dgm = merge_dgm      # seg's merge_dgm argument shadows the function

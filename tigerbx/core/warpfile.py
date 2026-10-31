@@ -10,21 +10,22 @@ Keys (arrays only; a key is absent when its step did not run):
     input_shape         (3,) int64
     affine_M            (4, 4) float64   numreg affine: template world -> input world (y_input = M @ x_template)
     rigid_M             (4, 4) float64   numreg rigid (plan step 'R'), same convention
-    vfa_warp            (3, X, Y, Z) float32   VFA displacement on the template grid, in template voxels along the
-                                             array axes: out(p) = affined(p + vfa_warp(p)) (core.warp.dense_transform)
+    treg_warp           (3, X, Y, Z) float32   tReg displacement on the template grid, in template voxels along the
+                                             array axes: out(p) = affined(p + treg_warp(p)) (core.warp.dense_transform)
     vxm_warp            (3, X, Y, Z) float32   VMnet displacement (plan step 'V'), same convention
     c2fvit_matrix       C2FViT affine matrix (affine_type='C2FViT')
     c2fvit_init_shift   (3,) float32   C2FViT initial translation (core.warp.init_shift)
 
 A map on the input grid goes to the template in one sample, numreg.resample(input, template, affine_M,
-warp=vfa_warp) (tigerbx.transform); its VBM modulation is the Jacobian determinant of vfa_warp
+warp=treg_warp) (tigerbx.transform); its VBM modulation is the Jacobian determinant of treg_warp
 (core.deform.jacobian_determinant), and det(affine_M[:3, :3]) is the affine volume ratio input / template.
+Files of 0.3.0 - 0.3.3 hold the tReg displacement under its old key `vfa_warp`; load_warp returns it as `treg_warp`.
 """
 import numpy as np
 
 FORMAT = 'tigerbx-warp/2'
 _ARRAYS = {
-    'affine_M': np.float64, 'rigid_M': np.float64, 'vfa_warp': np.float32, 'vxm_warp': np.float32,
+    'affine_M': np.float64, 'rigid_M': np.float64, 'treg_warp': np.float32, 'vxm_warp': np.float32,
     'c2fvit_matrix': np.float32, 'c2fvit_init_shift': np.float32,
 }
 
@@ -55,4 +56,6 @@ def load_warp(path):
                          'longer read; re-run the registration)') from exc
     if 'format' not in d or str(d['format']) != FORMAT:
         raise ValueError(f'{path}: not a {FORMAT} file')
+    if 'vfa_warp' in d:                          # the key's name up to 0.3.3
+        d['treg_warp'] = d.pop('vfa_warp')
     return d

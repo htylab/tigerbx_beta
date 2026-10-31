@@ -1,6 +1,6 @@
 //! tigerbx.template (tigerbx/pipelines/template.py) as a native port: a population template on the TigerBx template
 //! grid from a group of images. Per input: brain (tBX, or the non-zero voxels of a skull-stripped input), numreg
-//! affine to the bundled template, intensity / brain median; then `iters` rounds of VFA to the current template,
+//! affine to the bundled template, intensity / brain median; then `iters` rounds of tReg to the current template,
 //! voxel-wise median (or mean) and the inverse of the mean displacement; the last round samples every subject once
 //! from its input grid. The numreg port is not bit-identical to Python (rust/README.md), so the template is close to,
 //! not equal to, the Python one.
@@ -35,7 +35,7 @@ struct Subject {
     /// template voxel -> input voxel (inverse(input affine) . M . template affine)
     v: Mat4,
     scale: f64,
-    vfa_in: Array3<f64>,
+    treg_in: Array3<f64>,
     affined: Array3<f64>,
 }
 
@@ -110,9 +110,9 @@ fn prepare(f: &Path, t: &Template, opts: &Options, tbx: Option<&mut Session>, ts
     let v = mat_mul(&mat_mul(&mat_inv(&input_affine), &m), &t.vol.affine);
     let dim = t.vol.data.dim();
     let lin = resample::sample(&brain, dim, false, |i, j, k| at(&v, [i as f64, j as f64, k as f64]));
-    let vfa_in = min_max(&lin.mapv(|x| x as f32 as f64));
+    let treg_in = min_max(&lin.mapv(|x| x as f32 as f64));
     let affined = lin.mapv(|x| x as f32 as f64 / scale);
-    Ok(Subject { brain, mask, tseg: labels, v, scale, vfa_in, affined })
+    Ok(Subject { brain, mask, tseg: labels, v, scale, treg_in, affined })
 }
 
 /// Voxel-wise median / mean over subjects.
@@ -219,7 +219,7 @@ fn corr(a: &Array3<f64>, b: &Array3<f64>) -> f64 {
 /// Build the template of `files` into `out_dir` (template, template_mask, template_tseg when labels, template_log.json).
 #[allow(clippy::too_many_arguments)]
 pub fn run(files: &[std::path::PathBuf], out_dir: &Path, t: &Template, opts: &Options, mut tbx: Option<&mut Session>,
-           mut tseg: Option<&mut Session>, mut dgm: Option<&mut Session>, vfa: &mut Session) -> Result<()> {
+           mut tseg: Option<&mut Session>, mut dgm: Option<&mut Session>, treg: &mut Session) -> Result<()> {
     let t0 = std::time::Instant::now();
     let dim = t.vol.data.dim();
     let n = dim.0 * dim.1 * dim.2;
@@ -253,7 +253,7 @@ pub fn run(files: &[std::path::PathBuf], out_dir: &Path, t: &Template, opts: &Op
         for (si, s) in subs.iter().enumerate() {
             print!("\r  round {k}/{}: {}/{}", opts.iters, si + 1, subs.len());
             std::io::Write::flush(&mut std::io::stdout()).ok();
-            let grid = reg::run_vfa(vfa, &s.vfa_in, &fixed)?;
+            let grid = reg::run_treg(treg, &s.treg_in, &fixed)?;
             // w = grid - identity (float32)
             let w: Vec<f32> = (0..3 * n)
                 .map(|p| {

@@ -2,6 +2,7 @@ mod bx;
 mod inference;
 mod duope;
 mod duope_pipe;
+mod dwimc;
 mod inspect;
 mod nifti_io;
 mod npz;
@@ -21,7 +22,7 @@ use std::path::{Path, PathBuf};
 static EMBEDDED_TBX: &[u8] = include_bytes!("../models/mprage_tbx_v005_opt.onnx");
 static EMBEDDED_TSEG: &[u8] = include_bytes!("../models/mprage_tseg_v0011_opt.onnx");
 static EMBEDDED_DGM: &[u8] = include_bytes!("../models/mprage_dgm12_v002_opt.onnx");
-static EMBEDDED_VFA: &[u8] = include_bytes!("../models/mprage_reg_v005_vfa.onnx");
+static EMBEDDED_TREG: &[u8] = include_bytes!("../models/mprage_treg_v002.onnx");
 static EMBEDDED_INSPECT: &[u8] = include_bytes!("../models/inspect_v003.onnx");
 /// TigerBx's bundled registration template (same file as the Python package)
 static EMBEDDED_TEMPLATE: &[u8] = include_bytes!("../../tigerbx/template/mni_template.nii.gz");
@@ -39,6 +40,7 @@ const OUTPUT_POSTFIXES: [&str; 9] = ["tbx", "tbxmask", "tseg", "dgm", "affine", 
 ///   tigerbx data/T1w_dir -o results/ -t -A
 ///   tigerbx data/ -o results/ --inspect     (inspect_summary.csv: what each image is)
 ///   tigerbx --duope ap.nii.gz pa.nii.gz -o out/ --series bold.nii.gz   (EPI distortion correction)
+///   tigerbx --dwimc dwi.nii.gz -o out/ --reverse pa.nii.gz             (DWI motion + eddy-current correction)
 #[derive(Parser, Debug)]
 #[command(version, verbatim_doc_comment, about = "TigerBx tBX, TSEG and template registration using ONNX Runtime (no option: _tbx)")]
 struct Args {
@@ -54,13 +56,13 @@ struct Args {
     #[arg(long)]
     seg: bool,
 
-    /// Pipeline template normalisation (tBX, numreg affine, VFA): _tbx, _norm, _warp.npz (as tigerbx.norm); output
+    /// Pipeline template normalisation (tBX, numreg affine, tReg): _tbx, _norm, _warp.npz (as tigerbx.norm); output
     /// options add to it
     #[arg(long)]
     norm: bool,
 
     /// Pipeline affine-only template normalisation (tBX, numreg affine; keeps the brain's size and shape, e.g.
-    /// ventricle volume, which the VFA warp of --norm removes): _tbx, _affine, _warp.npz (as tigerbx.affine);
+    /// ventricle volume, which the tReg warp of --norm removes): _tbx, _affine, _warp.npz (as tigerbx.affine);
     /// output options add to it
     #[arg(long)]
     affine: bool,
@@ -83,7 +85,7 @@ struct Args {
     #[arg(long)]
     template: bool,
 
-    /// With --template: rounds of VFA to the current template
+    /// With --template: rounds of tReg to the current template
     #[arg(long, default_value_t = 6)]
     iters: usize,
 
@@ -124,8 +126,8 @@ struct Args {
     #[arg(short = 'A')]
     affine_out: bool,
 
-    /// Save the tBX brain normalised to the template (_norm; numreg affine + VFA, intensities by --intensity) and
-    /// its registration (_warp.npz: affine + VFA warp as plain arrays, for tigerbx.transform)
+    /// Save the tBX brain normalised to the template (_norm; numreg affine + tReg, intensities by --intensity) and
+    /// its registration (_warp.npz: affine + tReg warp as plain arrays, for tigerbx.transform)
     #[arg(short = 'n')]
     norm_out: bool,
 
@@ -146,9 +148,9 @@ struct Args {
     #[arg(long)]
     dgm_model: Option<PathBuf>,
 
-    /// VFA registration ONNX model file (default: embedded mprage_reg_v005_vfa)
+    /// tReg registration ONNX model file (default: embedded mprage_treg_v002)
     #[arg(long)]
-    vfa_model: Option<PathBuf>,
+    treg_model: Option<PathBuf>,
 
     /// Pipeline duope: EPI susceptibility distortion correction from reverse phase-encoding pairs (inputs: FORWARD
     /// REVERSE [FORWARD REVERSE ...]): <input>_duope for both scans and each --series, duope_summary.csv (as
@@ -156,16 +158,38 @@ struct Args {
     #[arg(long)]
     duope: bool,
 
+    /// Pipeline dwimc: head motion and eddy-current correction of DWI series (inputs; .bval / .bvec sidecars):
+    /// <input>_dwimc, .bval, .bvec (rotated), .csv (as tigerbx.dwimc); with --reverse / --field also the
+    /// susceptibility distortion; runs on its own, no model
+    #[arg(long)]
+    dwimc: bool,
+
+    /// With --dwimc: b0 volume(s) acquired with the reversed phase encoding (one for all inputs, or one per input)
+    #[arg(long)]
+    reverse: Vec<PathBuf>,
+
+    /// With --dwimc: instead of --reverse, a field in Hz (as --duope --save-field) and the readout time
+    #[arg(long)]
+    field: Option<PathBuf>,
+
+    /// With --dwimc: the eddy-current polynomial (1 linear, 2 quadratic; default 2)
+    #[arg(long)]
+    ec_order: Option<usize>,
+
+    /// With --dwimc: outer iterations (default 3)
+    #[arg(long)]
+    dwimc_iters: Option<usize>,
+
     /// With --duope: a DWI / BOLD series (any grid) to correct with the field; repeatable, one pair only
     #[arg(long)]
     series: Vec<PathBuf>,
 
-    /// With --duope: the forward scan's phase-encoding direction without a JSON sidecar: i, i-, j, j-, k, k- or
-    /// AP, PA, LR, RL, IS, SI (from -> to, through the affine); the reverse scan is the opposite
+    /// With --duope / --dwimc: the (forward) scan's phase-encoding direction without a JSON sidecar: i, i-, j, j-,
+    /// k, k- or AP, PA, LR, RL, IS, SI (from -> to, through the affine); the reverse scan is the opposite
     #[arg(long)]
     pe: Option<String>,
 
-    /// With --duope: the forward scan's total readout time (s) without a JSON sidecar
+    /// With --duope / --dwimc: the (forward) scan's total readout time (s) without a JSON sidecar
     #[arg(long)]
     readout: Option<f64>,
 
@@ -190,6 +214,14 @@ struct Args {
     #[arg(long)]
     save_disp: bool,
 
+    /// With --duope: the field's bending weight (default 0.15, intensities scaled to p99 = 1)
+    #[arg(long)]
+    alpha: Option<f64>,
+
+    /// With --duope: the finest estimation grid of the field in mm (default 3.5; 0 = the native grid, slower)
+    #[arg(long)]
+    max_mm: Option<f64>,
+
     /// Inspect ONNX model file (default: embedded inspect_v003)
     #[arg(long)]
     inspect_model: Option<PathBuf>,
@@ -204,7 +236,8 @@ struct Args {
     #[arg(short = 'g', long)]
     gpu: bool,
 
-    /// ONNX Runtime intra-op threads (default: 70% of available CPUs)
+    /// Threads (default: 70% of available CPUs): ONNX Runtime intra-op threads; with --dwimc the volumes processed in
+    /// parallel
     #[arg(short = 'j', long)]
     threads: Option<usize>,
 }
@@ -311,6 +344,36 @@ fn init_onnxruntime() -> Result<Option<PathBuf>> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    let other_pipelines = args.seg || args.norm || args.affine || args.all || args.tbx || args.tbxmask || args.tseg
+        || args.dgm || args.affine_out || args.norm_out || args.template || args.inspect || args.check;
+    if args.dwimc {
+        if other_pipelines || args.duope {
+            bail!("--dwimc runs on its own; run the other pipelines / outputs separately");
+        }
+        if !args.series.is_empty() || !args.series_pe.is_empty() || args.no_series_align || args.save_field
+            || args.save_disp || args.joint != JointMode::Auto || args.alpha.is_some() || args.max_mm.is_some() {
+            bail!("--series / --series-pe / --no-series-align / --joint / --save-field / --save-disp / --alpha / --max-mm go with --duope");
+        }
+        let order = args.ec_order.unwrap_or(2);
+        if !(1..=2).contains(&order) {
+            bail!("--ec-order: 1 or 2");
+        }
+        let settings = dwimc::Settings {
+            output: args.output.clone(),
+            reverse: args.reverse.clone(),
+            field: args.field.clone(),
+            pe: args.pe.clone(),
+            readout: args.readout,
+            order,
+            iters: args.dwimc_iters.unwrap_or(dwimc::OUTER).max(1),
+        };
+        let threads = args.threads.unwrap_or_else(inference::default_threads);
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
+        return pool.install(|| dwimc::run(&args.inputs, &settings));
+    }
+    if !args.reverse.is_empty() || args.field.is_some() || args.ec_order.is_some() || args.dwimc_iters.is_some() {
+        bail!("--reverse / --field / --ec-order / --dwimc-iters go with --dwimc");
+    }
     if args.duope {
         let others = args.seg || args.norm || args.affine || args.all || args.tbx || args.tbxmask || args.tseg
             || args.dgm || args.affine_out || args.norm_out || args.template || args.inspect || args.check;
@@ -331,12 +394,15 @@ fn main() -> Result<()> {
             },
             save_field: args.save_field,
             save_disp: args.save_disp,
+            alpha: args.alpha.unwrap_or(duope::ALPHA),
+            max_mm: args.max_mm.unwrap_or(duope::MAX_MM),
         };
         return duope_pipe::run(&args.inputs, &settings);
     }
     if !args.series.is_empty() || args.pe.is_some() || args.readout.is_some() || !args.series_pe.is_empty()
-        || args.no_series_align || args.save_field || args.save_disp || args.joint != JointMode::Auto {
-        bail!("--series / --pe / --readout / --series-pe / --no-series-align / --joint / --save-field / --save-disp go with --duope");
+        || args.no_series_align || args.save_field || args.save_disp || args.joint != JointMode::Auto
+        || args.alpha.is_some() || args.max_mm.is_some() {
+        bail!("--series / --pe / --readout / --series-pe / --no-series-align / --joint / --save-field / --save-disp / --alpha / --max-mm go with --duope");
     }
     let ort_lib = init_onnxruntime()?;
     if args.check {
@@ -407,8 +473,8 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    let mut vfa_session = if outputs.norm {
-        Some(inference::create_session(&model_bytes(&args.vfa_model, EMBEDDED_VFA, "VFA")?, threads, args.gpu)?)
+    let mut treg_session = if outputs.norm {
+        Some(inference::create_session(&model_bytes(&args.treg_model, EMBEDDED_TREG, "tReg")?, threads, args.gpu)?)
     } else {
         None
     };
@@ -430,7 +496,7 @@ fn main() -> Result<()> {
             tbx: &mut tbx_session,
             tseg: tseg_session.as_mut(),
             dgm: dgm_session.as_mut(),
-            vfa: vfa_session.as_mut(),
+            treg: treg_session.as_mut(),
         };
         if let Err(e) = process_file(input, args.output.as_deref(), outputs, sessions, template.as_ref(), prior.as_ref()) {
             eprintln!("  ERROR: {:#}", e);
@@ -466,7 +532,7 @@ fn run_check(args: &Args, ort_lib: Option<&Path>) -> Result<()> {
     }
     println!("embedded models:");
     for (name, bytes) in [("mprage_tbx_v005_opt", EMBEDDED_TBX), ("mprage_tseg_v0011_opt", EMBEDDED_TSEG),
-                          ("mprage_dgm12_v002_opt", EMBEDDED_DGM), ("mprage_reg_v005_vfa", EMBEDDED_VFA),
+                          ("mprage_dgm12_v002_opt", EMBEDDED_DGM), ("mprage_treg_v002", EMBEDDED_TREG),
                           ("inspect_v003", EMBEDDED_INSPECT)] {
         println!("  {name:24} {:6.1} MB", bytes.len() as f64 / 1_048_576.0);
     }
@@ -507,7 +573,7 @@ fn run_template(args: &Args) -> Result<()> {
     } else {
         None
     };
-    let mut vfa = inference::create_session(&model_bytes(&args.vfa_model, EMBEDDED_VFA, "VFA")?, threads, args.gpu)?;
+    let mut treg = inference::create_session(&model_bytes(&args.treg_model, EMBEDDED_TREG, "tReg")?, threads, args.gpu)?;
     let t = reg::load_template(EMBEDDED_TEMPLATE)?;
     let opts = template::Options {
         iters: args.iters,
@@ -517,7 +583,7 @@ fn run_template(args: &Args) -> Result<()> {
         contrast: args.contrast.clone(),
     };
     println!("Building a template of {} input(s) into {}\n", files.len(), out_dir.display());
-    template::run(&files, out_dir, &t, &opts, tbx.as_mut(), tseg.as_mut(), dgm.as_mut(), &mut vfa)?;
+    template::run(&files, out_dir, &t, &opts, tbx.as_mut(), tseg.as_mut(), dgm.as_mut(), &mut treg)?;
     println!("Done!");
     Ok(())
 }
@@ -572,7 +638,7 @@ struct Sessions<'a> {
     tbx: &'a mut ort::session::Session,
     tseg: Option<&'a mut ort::session::Session>,
     dgm: Option<&'a mut ort::session::Session>,
-    vfa: Option<&'a mut ort::session::Session>,
+    treg: Option<&'a mut ort::session::Session>,
 }
 
 fn process_file(
@@ -612,7 +678,7 @@ fn process_file(
     if let Some(t) = template {
         let brain = res.brain.view().into_dimensionality::<ndarray::Ix3>()?.to_owned();
         let mask = res.mask.view().into_dimensionality::<ndarray::Ix3>()?.to_owned();
-        let r = reg::run_reg(&brain, prior.map(|_| &mask), &header, t, sessions.vfa)?;
+        let r = reg::run_reg(&brain, prior.map(|_| &mask), &header, t, sessions.treg)?;
         if outputs.affine || outputs.affine_pipe {
             // -A alone: min-max as tigerbx.reg('A'); the --affine pipeline: --intensity
             let affine = if outputs.affine_pipe {
@@ -625,7 +691,7 @@ fn process_file(
             println!("  -> {}", p.display());
         }
         if let Some(dir) = std::env::var_os("TIGERBX_DUMP_REG") {
-            // validation aid: the registration (template -> input world matrix, VFA grid) for applying it to labels
+            // validation aid: the registration (template -> input world matrix, tReg grid) for applying it to labels
             let stem = output_path(input, Some(Path::new(&dir)), "reg");
             let stem = stem.to_string_lossy().replace("_reg.nii.gz", "");
             let m: Vec<String> = r.matrix.iter().flatten().map(|v| format!("{v:.17e}")).collect();
@@ -669,8 +735,8 @@ fn scale(img: ndarray::Array3<f32>, mask: Option<&ndarray::Array3<bool>>, intens
 }
 
 /// `<stem>_warp.npz`: the registration as TigerBx `core.warpfile` (plain arrays; tigerbx.transform applies it):
-/// template grid, input grid, affine_M (template world -> input world) and, when VFA ran, vfa_warp (3, X, Y, Z:
-/// displacement in template voxels, = VFA sampling grid - identity).
+/// template grid, input grid, affine_M (template world -> input world) and, when tReg ran, treg_warp (3, X, Y, Z:
+/// displacement in template voxels, = tReg sampling grid - identity).
 fn write_warp(path: &Path, header: &nifti::NiftiHeader, shape: &[usize], t: &reg::Template, matrix: &[[f64; 4]; 4], grid: Option<&[f32]>) -> Result<()> {
     use npz::Npy;
     let (x, y, z) = t.vol.data.dim();
@@ -696,7 +762,7 @@ fn write_warp(path: &Path, header: &nifti::NiftiHeader, shape: &[usize], t: &reg
         ("affine_M", Npy::F64(vec![4, 4], &m)),
     ];
     if let Some(d) = disp.as_ref() {
-        arrays.push(("vfa_warp", Npy::F32(vec![3, x, y, z], d)));
+        arrays.push(("treg_warp", Npy::F32(vec![3, x, y, z], d)));
     }
     npz::write_npz(path, &arrays)
 }

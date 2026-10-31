@@ -134,5 +134,5 @@ Use `full=True`: lite mode scores a random subset.
 
 | Method                                 | Dice  |
 |----------------------------------------|-------|
-| `AD`: numreg affine + VFA (default)     | 0.852 |
+| `AD`: numreg affine + tReg (default)     | 0.852 |
 | `AV`: C2FViT + VMnet (default up to 0.2.3) | 0.797 |

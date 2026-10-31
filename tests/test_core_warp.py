@@ -100,3 +100,45 @@ def test_resample_same_grid_shortcut_matches_interpolation():
     # a different shape still interpolates
     img = nib.Nifti1Image(rng.random((9, 8, 7)).astype(np.float32), aff)
     assert resample_img(img, target_affine=aff, target_shape=(5, 5, 5)).shape == (5, 5, 5)
+
+
+def test_epi_template_on_the_template_grid():
+    from tigerbx.core import templatereg
+    t = templatereg.template(None)
+    for kind in ('se', 'bold'):
+        e = templatereg.epi_template(kind)
+        assert e.shape == t.shape and np.allclose(e.affine, t.affine, atol=1e-3)
+        x = e.get_fdata()
+        assert x.min() >= 0 and (x > 0).mean() > 0.1
+    with pytest.raises(ValueError):
+        templatereg.epi_template('flair')
+
+
+def test_model_box_and_warp_from_box():
+    import nibabel as nib
+    from tigerbx.core import templatereg
+    # the bundled template is on the model grid: no box (outputs as before)
+    assert templatereg.model_box(templatereg.template(None)) is None
+    # a 1.5 mm template of another size: a 1 mm box of the model size on its content
+    data = np.zeros((90, 110, 100), np.float32)
+    data[20:70, 25:85, 20:80] = 1.0
+    aff = np.diag([1.5, 1.5, 1.5, 1.0])
+    aff[:3, 3] = (-60, -80, -70)
+    tpl = nib.Nifti1Image(data, aff)
+    box = templatereg.model_box(tpl)
+    assert box.shape == templatereg.MODEL_SHAPE and np.allclose(box.affine[:3, :3], np.eye(3))
+    centre = box.affine @ np.r_[(np.array(box.shape) - 1) / 2, 1]
+    assert np.allclose(centre[:3], (aff @ np.r_[np.argwhere(data > 0).mean(0), 1])[:3])
+    # 3 mm along the first axis on the box = 2 template voxels; 0 outside the box
+    warp = np.zeros((3,) + box.shape, np.float32)
+    warp[0] = 3.0
+    w = templatereg.warp_from_box(warp, box, tpl)
+    assert w.shape == (3,) + data.shape
+    assert np.allclose(w[0][data > 0], 2.0, atol=1e-5) and np.allclose(w[1:], 0)
+    big = nib.Nifti1Image(np.ones((200, 120, 120), np.float32), np.eye(4))      # wider than the box along x, no background
+    wb = templatereg.warp_from_box(np.ones((3,) + templatereg.MODEL_SHAPE, np.float32),
+                                   templatereg.model_box(big), big)
+    assert wb[0, 0].max() == 0 and wb[0, 100].min() == 1.0
+    # an image moved by the carried-back displacement: out(p) = data(p + w(p)), the same move as on the box
+    moved = templatereg.warp_on_grid(data, w)
+    assert np.allclose(moved[22:66, 30:80, 25:75], data[24:68, 30:80, 25:75])

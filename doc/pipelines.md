@@ -15,6 +15,9 @@ accurate is done in the pipelines.
 | `template` | `tigerbx.template(...)` | `--template` | `template`, `template_mask`, `template_tseg`, `template_log.json` |
 | `inspect` | `tigerbx.inspect(...)` | `--inspect` | `inspect_summary.csv` (what each image is; [inspect](inspect.md)) |
 | `duope` | `tigerbx.duope(forward, reverse, ...)` | `--duope` | `<input>_duope` for forward, reverse and series, `duope_summary.csv` (EPI distortion from a reverse phase-encoding pair; [duope](duope.md)) |
+| `dwimc` | `tigerbx.dwimc(dwi, reverse=...)` | `--dwimc` | `<dwi>_dwimc`, `<dwi>_dwimc.bval` / `.bvec` (rotated) / `.csv` (head motion + eddy-current correction of a DWI series, with the susceptibility field from reversed-PE b0s; [dwimc](dwimc.md)) |
+| `epinorm` | `tigerbx.epinorm(series, t1, ap, pa)` | — | `<series>_epi2t1`, `<series>_epi2mni`, `_epinorm.npz`, `epinorm_summary.csv` (a DWI / BOLD series onto the T1 and the template: duope from the AP / PA pair, rigid to the T1, the T1's affine + tReg, one resampling; [epinorm](epinorm.md)) |
+| `to_epi` | `tigerbx.to_epi(t1, epi, labels=...)` | — | `<t1>_t12epi`, `<label>_t12epi` (the T1 and label maps onto an EPI's grid, rigid: tBX on both, Mattes MI, labels nearest; [epinorm](epinorm.md)) |
 
 Common arguments: `input` (a NIfTI file, a directory, a glob pattern or a list), `output` (output directory;
 `None` writes next to each input), `gpu`, `gz` (`.nii.gz` outputs), `model` (model overrides), `verbose`. A single
@@ -32,13 +35,14 @@ Brain extraction (the executable with no option): tBX -> `_tbx` (the brain image
 `tigerbx.run('b')`.
 
 ```python
-tigerbx.bx(input=None, output=None, *, save_mask=False, gpu=False, gz=True, model=None, verbose=0)
+tigerbx.bx(input=None, output=None, *, save_mask=False, gpu=False, gz=True, model=None, resume=False, verbose=0)
 ```
 
 | Parameter   | Type   | Default | Description |
 |-------------|--------|---------|-------------|
 | `save_mask` | `bool` | `False` | Also write `_tbxmask` |
 | `model`     | `dict` | `None`  | `{'tbx': ...}` override |
+| `resume` | `bool` | `False` | Skip inputs whose `_tbx` already exists (continuing a batch); they are left out of the returned list |
 
 ---
 
@@ -51,12 +55,13 @@ deep-GM label that DGM12 does not keep take the label of the nearest neighbour o
 
 ```python
 tigerbx.seg(input=None, output=None, *, merge_dgm=True, save_tbx=True, save_tissue=False, gpu=False, gz=True,
-            model=None, verbose=0)
+            model=None, resume=False, verbose=0)
 ```
 
 | Parameter   | Type   | Default | Description |
 |-------------|--------|---------|-------------|
 | `merge_dgm` | `bool` | `True`  | Deep-GM structures from DGM12; `False`: the TSEG model output (`tigerbx.run('t')`) |
+| `resume` | `bool` | `False` | Skip inputs whose `_tseg` already exists (continuing a batch); they are left out of the returned list |
 | `save_tbx`  | `bool` | `True`  | Also write `_tbx` |
 | `save_tissue` | `bool` | `False` | Also write the CSF / GM / WM partial-volume maps `_pve_csf`, `_pve_gm`, `_pve_wm` (T1 only; see below) |
 | `model`     | `dict` | `None`  | Overrides: `tbx`, `tseg`, `dgm` |
@@ -82,31 +87,32 @@ Template normalisation onto the 1 mm template grid:
 
 * `affine` (executable `--affine`): brain mask -> numreg affine. Keeps each brain's size and shape (e.g. ventricle
   volume, atrophy), which a nonlinear warp removes.
-* `norm` (executable `--norm`): brain mask -> numreg affine -> VFA. Aligns the anatomy voxel by voxel.
+* `norm` (executable `--norm`): brain mask -> numreg affine -> tReg. Aligns the anatomy voxel by voxel.
 
-Any contrast: numreg uses mutual information, and the intensities stay in the input's units by default. VFA is a T1
+Any contrast: numreg uses mutual information, and the intensities stay in the input's units by default. tReg is a T1
 model; other contrasts register somewhat less well. Each image is sampled once from the input grid, however oblique or anisotropic: `_affine` at the affine
-and `_norm` at the affine + VFA warp composed, both cubic B-spline (clipped to the input range). VFA itself gets
+and `_norm` at the affine + tReg warp composed, both cubic B-spline (clipped to the input range). tReg itself gets
 the trilinear affine image, as it expects.
 
 ```python
 tigerbx.affine(input=None, output=None, *, mask=None, template=None, intensity='raw', save_warp_file=True,
-               gpu=False, gz=True, model=None, verbose=0)
+               gpu=False, gz=True, model=None, resume=False, verbose=0)
 tigerbx.norm(input=None, output=None, *, mask=None, template=None, intensity='raw', save_affine=False,
-             save_warp_file=True, gpu=False, gz=True, model=None, verbose=0)
+             save_warp_file=True, gpu=False, gz=True, model=None, resume=False, verbose=0)
 ```
 
 | Parameter        | Type            | Default | Description |
 |------------------|-----------------|---------|-------------|
 | `mask`           | `None`, `str`, image or `'none'` | `None` | `None`: tBX; a NIfTI path / image: your brain mask (non-zero; resampled nearest if on another grid); `'none'`: the input is already skull-stripped |
-| `template`       | `str`           | `None`  | Registration template (default: the bundled 1 mm template) |
+| `template`       | `str`           | `None`  | Registration template (default: the bundled 1 mm template); a custom one keeps its own grid (see [reg](reg.md)) |
 | `intensity`      | `str`           | `'raw'` | `'raw'`: the input's units (any contrast); `'minmax'`: [0, 1]; `'gnorm'`: T1 tissues CSF 1/3, GM 2/3, WM 1 (`tigerbx.core.tissuenorm.tissue_norm`; bundled template only) |
 | `save_affine`    | `bool`          | `False` | `norm` only: also write `_affine` |
 | `save_warp_file` | `bool`          | `True`  | Write `_warp.npz` |
-| `model`          | `dict`          | `None`  | Overrides: `tbx`, `vfa` (`norm`) |
+| `model`          | `dict`          | `None`  | Overrides: `tbx`, `treg` (`norm`) |
+| `resume`  | `bool`          | `False` | Skip inputs whose `_affine` / `_norm` already exists (continuing a batch); they are left out of the returned list |
 
 Outputs per input: `_tbx` (input grid; when tBX ran), `_affine` or `_norm` (template grid) and `_warp.npz` (plain
-arrays, see [registration usage](reg.md): `affine_M`, plus `vfa_warp` for `norm`). `tigerbx.transform(image,
+arrays, see [registration usage](reg.md): `affine_M`, plus `treg_warp` for `norm`). `tigerbx.transform(image,
 '<stem>_warp.npz', out)` carries any other image on the input grid (labels, PVE maps) to the template.
 
 ```python
@@ -125,7 +131,7 @@ template's frame), the way the bundled template was built:
 
 1. each image: brain (tBX, or `mask='none'` for skull-stripped inputs), numreg affine to the bundled template
    (mutual information: any contrast), intensity divided by the brain median;
-2. `iters` rounds: VFA-register every subject to the current template (round 0: the affine images), take the
+2. `iters` rounds: tReg-register every subject to the current template (round 0: the affine images), take the
    voxel-wise median (`stat`) and move it by the inverse of the mean displacement, so the template stays in the
    group's mean frame; the last round samples every subject once from its input grid (affine + warp, cubic);
 3. brain mask = majority of the subjects' tBX masks; for T1 (`labels='auto'`) the labels are the majority vote of
@@ -147,7 +153,7 @@ tigerbx.template(input=None, output=None, *, contrast='t1', iters=6, stat='media
 
 The template intensities are scaled to the bundled template's brain median. Use it as the registration target of
 the other pipelines: `tigerbx.norm(..., template='tpl_dir/template.nii.gz')` (its `_tseg` file is found by name).
-VFA is a T1 model; a T2 group builds, but registering T2 to its own template did not align better than to the
+tReg is a T1 model; a T2 group builds, but registering T2 to its own template did not align better than to the
 bundled T1 template.
 
 ---

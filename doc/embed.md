@@ -1,10 +1,10 @@
-# TigerBx: `embed` — VFA brain embedding
+# TigerBx: `embed` — tReg brain embedding
 
 `tigerbx.embed` turns a T1w image into a small, fixed-layout table of regional features for downstream models
-(classification, regression, clustering): the mean VFA encoder feature inside each of the 37 TSEG structures, plus the
+(classification, regression, clustering): the mean tReg encoder feature inside each of the 37 TSEG structures, plus the
 structure volumes and TIV.
 
-The encoder is the one of the VFA registration model used by `tigerbx.reg('AD')` (`mprage_reg_v005_vfa.onnx`; same weights as v004),
+The encoder is the one of tReg v1 (`mprage_treg_v001.onnx`, the registration model up to 0.3.3),
 exported alone as `mprage_embed_v001_vfa.onnx` (6.8 MB). It is a registration encoder (no labels), so
 its features describe local anatomy and shape.
 
@@ -40,7 +40,7 @@ tigerbx.embed('sub-001_T1w.nii.gz', 'out', gpu=True)
 
 1. tBX + TSEG (one `tigerbx.run('mt')` call; TSEG includes label 99, see [seglabel.md](seglabel.md))
 2. numreg affine of the skull-stripped image to the bundled MNI-space template (as `tigerbx.reg('A')`)
-3. VFA encoder on the affine image -> feature maps L1 (2 mm, 32 channels) and L2 (4 mm, 64 channels)
+3. tReg encoder on the affine image -> feature maps L1 (2 mm, 32 channels) and L2 (4 mm, 64 channels)
 4. TSEG -> template space with the same affine (nearest); each structure's mask is block-averaged onto the L1 / L2
    grids (partial-volume weights) and the features are averaged inside it
 

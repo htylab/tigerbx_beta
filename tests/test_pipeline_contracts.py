@@ -121,7 +121,7 @@ def test_registration_state_keeps_scaled_int16_intensities():
     assert state['tbx_data'].min() >= 0
 
 
-def test_reg_plan_vfa_step_and_defaults():
+def test_reg_plan_treg_step_and_defaults():
     import inspect
     reg_mod = importlib.import_module('tigerbx.modules.reg')
     vbm_mod = importlib.import_module('tigerbx.pipelines.vbm')
@@ -130,8 +130,9 @@ def test_reg_plan_vfa_step_and_defaults():
     with pytest.raises(ValueError):
         reg_mod._parse_reg_plan('D')                     # D needs a prior affine step
     run_d = reg_mod._build_run_dict(SimpleNamespace(plan='AD'))
-    assert run_d['vfa'] and not run_d['registration'] and run_d['affine_type'] == 'numreg'
-    assert reg_mod._build_omodel({'vfa': 'x.onnx'})['vfa'] == 'x.onnx'
+    assert run_d['treg'] and not run_d['registration'] and run_d['affine_type'] == 'numreg'
+    assert reg_mod._build_omodel({'treg': 'x.onnx'})['treg'] == 'x.onnx'
+    assert reg_mod._build_omodel({'vfa': 'y.onnx'})['treg'] == 'y.onnx'      # the key's name up to 0.3.3
     assert inspect.signature(reg_mod.reg).parameters['affine_type'].default == 'numreg'
     params = inspect.signature(vbm_mod.vbm).parameters
     assert params['reg_plan'].default == 'AD' and params['affine_type'].default == 'numreg'

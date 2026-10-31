@@ -16,16 +16,17 @@ Prefer the pipelines; use the modules only for a model's raw output or custom wo
 | Brain extraction | `tigerbx.bx(input, output)` | `tigerbx in.nii.gz` | `_tbx` (`save_mask=True`: `_tbxmask`) |
 | Whole-brain segmentation | `tigerbx.seg(input, output)` | `--seg` | `_tbx`, `_tseg` (`save_tissue=True`: `_pve_csf/gm/wm`) |
 | Affine to the 1 mm template (keeps size and shape) | `tigerbx.affine(input, output)` | `--affine` | `_tbx`, `_affine`, `_warp.npz` |
-| Nonlinear normalisation (numreg affine + VFA) | `tigerbx.norm(input, output)` | `--norm` | `_tbx`, `_norm`, `_warp.npz` |
+| Nonlinear normalisation (numreg affine + tReg) | `tigerbx.norm(input, output)` | `--norm` | `_tbx`, `_norm`, `_warp.npz` |
 | VBM | `tigerbx.vbm(input, output)` | — | `_SmoothedGM`, `_norm`, `vbm_summary.csv` |
 | Population template | `tigerbx.template(input, output)` | `--template` | `template`, `template_mask`, `template_tseg` |
 | Raw model outputs | `tigerbx.run('bmatcd', input, output)` | `-b -m -t -d` | `_tbx _tbxmask _aseg _tseg _ct _dgm` |
 | Carry an image to the template | `tigerbx.transform(image, warp_npz, output)` | — | template-space image |
 | HLC parcellation | `tigerbx.hlc(input, output)` | — | `_hlc` |
-| Registration plans (`R` rigid, `A` affine, `V` VMnet, `D` VFA) | `tigerbx.reg('AD', input, output)` | — | `_affine`, `_VFA`, `_warp.npz` |
+| Registration plans (`R` rigid, `A` affine, `V` VMnet, `D` tReg) | `tigerbx.reg('AD', input, output)` | — | `_affine`, `_treg`, `_warp.npz` |
 | Regional embedding, volumes, TIV | `tigerbx.embed(input, output)` | — | `<stem>_embed.npz` |
 | What an image is (contrast, skull-stripped, EPI, orientation, truncation, motion score) | `tigerbx.inspect(input, output)` | `--inspect` | `inspect_summary.csv` |
 | EPI distortion from a reverse phase-encoding pair (AP/PA, LR/RL; topup-like), optionally a DWI/BOLD series | `tigerbx.duope(forward, reverse, output, series=...)` | `--duope fwd rev --series ...` | `<input>_duope` (forward, reverse, series); `save_field=True`: `_duope_field` (Hz) |
+| A DWI / BOLD series onto the subject's T1 and the template (distortion from a reverse pair, rigid to the T1, T1 affine + tReg, one resampling) | `tigerbx.epinorm(series, t1, ap, pa, output)` | — | `_epi2t1`, `_epi2mni`, `_epinorm.npz` |
 | EPI / DTI distortion correction | `tigerbx.gdm(input, output)` | — | `_gdmi` (`dmap=True`: `_gdm`) |
 | Metrics (Dice, HD95, PSNR, SSIM, ...) | `tigerbx.eval(y_true, y_pred, metrics)` | — | dict |
 

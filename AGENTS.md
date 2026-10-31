@@ -16,6 +16,7 @@ Current baseline:
 - `tigerbx/`: core library (`bx`, `hlc`, `reg`, `vbm`, `embed`, `gdm`, `eval`, `validate`)
 - `tigerbx/pipelines/vbm.py`: VBM pipeline (separate from `reg`)
 - `tigerbx/pipelines/duope.py` + `tigerbx/core/duope.py`: EPI distortion from a reverse phase-encoding pair
+- `tigerbx/pipelines/epinorm.py`: a DWI / BOLD series (with its AP / PA pair) onto the subject's T1 and the template in one resampling
   (executable: `rust/src/duope.rs`, `duope_pipe.rs`; `tests/duope_parity.py`)
 - `tigerbx/core/`: shared I/O / ONNX / resample / spatial helpers; `core/models.py` the default models and sha256
 - `rust/`: the stand-alone `tigerbx` executable (tBX, TSEG, template normalisation; see `rust/README.md`)
@@ -60,7 +61,7 @@ Current baseline:
 ### `reg` / `vbm` Contracts
 
 - `reg` uses uppercase plan strings (positional): `R/A/V/D` (default `AD`)
-  - `R` rigid, `A` affine, `D` VFA, `V` VMnet
+  - `R` rigid, `A` affine, `D` tReg, `V` VMnet
 - `VBM` is a separate pipeline (`tigerbx.vbm`), not a `reg` mode.
 
 ### Output Path Contract (important)
@@ -117,6 +118,7 @@ Run before a release and after changes to `bx`, `core/resample`, `core/numreg` o
   labels `seg18`, `seg123` and `reg60` may appear. Check every message, diff and exported model before pushing.
 - Model files are downloaded via `lib_tool.get_model()` and cached locally; a release model name must match its
   sha256 in `tigerbx/core/models.py`, the one place for the default model names (see doc/developer_guide.md §7).
+  How each released model is built: doc/model_build.md (`python -m tigerbx.dev.build_models` rebuilds the `_opt` ones).
 - Put temporary artifacts under `temp/`.
 
 ## Don’ts (quick list)

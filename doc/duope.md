@@ -23,14 +23,23 @@ r = tigerbx.duope('ap.nii.gz', 'pa.nii.gz', 'out/', pe='AP', readout=0.05)   # n
 | `readout` | `None` | Total readout time (s) when there is no JSON sidecar (needed for `save_field` and to scale the field to a series with another readout time) |
 | `series_pe` | `None` | The direction of a series without a sidecar (same values as `pe`; default: the forward scan's); a list for a list of series |
 | `joint` | `'auto'` | Estimate field and motion jointly: `'auto'` when the motion between the scans exceeds 1 mm or 1°, `True`, `False` |
+| `alpha` | `0.15` | Bending weight of the field (intensities scaled to p99 = 1); smaller follows the data more closely |
+| `max_mm` | `3.5` | Finest estimation grid of the field in mm: the field is solved on block means of f voxels (f the largest power of 2 with f × voxel ≤ `max_mm`) and interpolated; `0` = the native grid (slower). The defaults are tuned for correcting images; a field map for its own sake (QSM, ...) may want `max_mm=0` and a smaller `alpha` |
 | `save_field` | `False` | Also write the field in Hz (needs the readout time) |
 | `save_disp` | `False` | Also write the forward scan's displacement in voxels |
+| `resume` | `False` | Skip pairs whose `<forward>_duope` already exists (continuing a batch); they are left out of the returned list |
 | `gz` | `True` | `.nii.gz` outputs |
 
 The phase-encoding direction of each scan and the readout time are read from the BIDS JSON sidecars
 (`PhaseEncodingDirection`, `TotalReadoutTime`, else `EffectiveEchoSpacing` × (phase-encoding matrix − 1)) — never from a `dir-` label, which datasets use inconsistently. Without
-a sidecar, `pe` / `readout` are used, else the phase axis comes from the header's `dim_info` (polarity then assumed
-positive for `forward`, with a warning). For a list of pairs, `pe`, `readout` and `series_pe` take either one value
+a sidecar, `pe` / `readout` are used, else the phase encoding comes from the data (with a warning; the header's
+`dim_info` is only compared): the phase axis is the one along which the corrected pair agrees best, the forward scan's
+polarity is then taken as positive, and a series without a sidecar runs along the forward or the reverse scan's
+direction by which of the two unwarps it onto the corrected forward scan. A series' sidecar direction is checked the
+same way: when the data clearly say the other direction (NCC higher by 0.03 or more; a wrong direction doubles the
+distortion, so the gap is large) the data are used, with a warning; `series_pe` is always followed. The summary's
+`series_direction` gives, per series, the source (`json`, `series_pe`, `data`, `data_over_json`) and the two NCCs
+(along the forward / the reverse scan's direction). For a list of pairs, `pe`, `readout` and `series_pe` take either one value
 for all pairs or a list with one per pair. The two directions of a pair are compared in world space, so the reverse
 scan may be stored in another voxel orientation.
 
@@ -40,7 +49,8 @@ field output changes. The summary CSV lists the anatomical direction used for th
 so that it can be checked.
 
 The stand-alone executable runs the same pipeline (`tigerbx --duope FORWARD REVERSE [FORWARD REVERSE ...]`, options
-`--series`, `--pe`, `--readout`, `--series-pe`, `--no-series-align`, `--joint`, `--save-field`, `--save-disp`; see
+`--series`, `--pe`, `--readout`, `--series-pe`, `--no-series-align`, `--joint`, `--alpha`, `--max-mm`, `--save-field`,
+`--save-disp`; see
 [rust/README.md](../rust/README.md)), with the same outputs and summary.
 
 ## Outputs
@@ -57,9 +67,19 @@ By default only the corrected images, each named after its input:
 
 The returned dict (one pair) has the images under `forward`, `reverse`, each series' file name, `field`, `disp`.
 
-All displacements are in NIfTI voxel axes. FSL works in radiological voxel order and flips voxel x of images with
-a positive-determinant affine (e.g. LPS): with the phase along x, topup's `field_hz` then has the opposite sign in
-NIfTI voxels — compare fields with that in mind.
+### The field: units, sign, resolution
+
+- `core.duope.estimate` returns the forward scan's displacement `d` in **voxels** along its phase axis (the
+  `_duope_disp` output); `_duope_field` is `d / readout time` in **Hz**.
+- Sign: a positive field moves a positive-polarity scan's signal towards +axis (the corrected image is
+  `forward(x + d)`), the negative-polarity scan's towards −axis. This agrees in sign with a gradient-echo field map,
+  and the synthetic tests (`tests/test_duope.py`) pin it.
+- All displacements are in NIfTI voxel axes. FSL works in radiological voxel order and flips voxel x of images with
+  a positive-determinant affine (e.g. LPS): with the phase along x, topup's `field_hz` then has the opposite sign in
+  NIfTI voxels — compare fields with that in mind.
+- The field is written on the forward scan's grid, but is solved on the `max_mm` grid (block means, default
+  3.5 mm) under the bending prior `alpha` and interpolated, so it is smooth: for a field map as the result itself
+  (QSM, ...) use `max_mm=0` (native grid) and a smaller `alpha`.
 
 ## Method
 

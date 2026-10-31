@@ -7,7 +7,7 @@ from tigerbx.pipelines import _common
 
 
 def affine(input=None, output=None, *, mask=None, template=None, intensity='raw', save_warp_file=True,
-           gpu=False, gz=True, model=None, verbose=0):
+           gpu=False, gz=True, model=None, resume=False, verbose=0):
     """Affine-only template normalisation (executable ``--affine``): brain mask -> numreg affine -> the brain on
     the template grid. Keeps each brain's size and shape (e.g. ventricle volume), which a nonlinear warp removes.
     Any contrast (numreg uses mutual information).
@@ -18,7 +18,8 @@ def affine(input=None, output=None, *, mask=None, template=None, intensity='raw'
     mask: None runs tBX; a NIfTI path / image is the brain mask (non-zero); ``'none'``: the input is already
     skull-stripped. template: registration template (default: the bundled 1 mm template). intensity: ``'raw'``
     (the input's units, default), ``'minmax'`` ([0, 1]) or ``'gnorm'`` (T1 only: CSF 1/3, GM 2/3, WM 1; bundled
-    template). model: {'tbx': ...} override. Returns the images dict for a single input, otherwise a list of files
+    template). model: {'tbx': ...} override. resume: skip inputs whose outputs are already there (continuing
+    a batch; they are left out of the list). Returns the images dict for a single input, otherwise a list of files
     dicts.
     """
     _common.check_intensity(intensity, template)
@@ -42,4 +43,4 @@ def affine(input=None, output=None, *, mask=None, template=None, intensity='raw'
                                       img.shape, affine_M=M)
         return images, saved
 
-    return _common.batch('affine', input, output, gz, verbose, one)
+    return _common.batch('affine', input, output, gz, verbose, one, exists='affine' if resume else None)

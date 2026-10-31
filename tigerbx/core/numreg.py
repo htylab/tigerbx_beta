@@ -56,7 +56,7 @@ def apply(moving, ref, M, order=1, data=None, cval=0.0):
 
 def resample(moving, ref, M, warp=None, order=3, data=None, slab=16):
     """`moving` (or `data` on its grid, any orientation) on `ref`'s grid through M, optionally after the dense
-    displacement `warp` (3, X, Y, Z; ref voxels, as the VFA warp): out(p) = moving(V (p + warp(p))), one
+    displacement `warp` (3, X, Y, Z; ref voxels, as the tReg warp): out(p) = moving(V (p + warp(p))), one
     interpolation from the moving grid however many transforms. order 3 (cubic B-spline, as affine_transform
     mode='constant') is clipped to [min(data, 0), max(data, 0)] against overshoot; 0 outside the moving grid."""
     data = np.asarray(moving.dataobj, dtype=np.float32) if data is None else np.asarray(data, np.float32)

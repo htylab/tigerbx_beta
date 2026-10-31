@@ -1,5 +1,5 @@
 //! The DuoPE pipeline (`--duope`), as TigerBx `tigerbx.duope` (`tigerbx/pipelines/duope.py`): phase encoding and
-//! readout time from the BIDS JSON sidecars (else --pe / --readout, else the header's dim_info), b0 = mean of the
+//! readout time from the BIDS JSON sidecars (else --pe / --readout, else from the data), b0 = mean of the
 //! b < 50 volumes (.bval) or of all volumes, every input corrected as <input>_duope (4D read and written volume by
 //! volume), series with their own grid / polarity / head position (--series), duope_summary.csv per output folder.
 
@@ -8,7 +8,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use ndarray::{Array3, ShapeBuilder};
+use ndarray::{Array3, ShapeBuilder, Zip};
 use nifti::{Endianness, NiftiHeader};
 
 use crate::duope::{self, A3};
@@ -32,6 +32,8 @@ pub struct Settings {
     pub joint: Option<bool>,
     pub save_field: bool,
     pub save_disp: bool,
+    pub alpha: f64,
+    pub max_mm: f64,
 }
 
 // ---------------------------------------------------------------- NIfTI, volume by volume
@@ -190,12 +192,12 @@ fn header_bytes(h: &NiftiHeader, dims: &[usize]) -> Vec<u8> {
 }
 
 /// A float32 NIfTI written volume by volume (gzip level 1 for .gz, as nibabel).
-struct VolWriter {
+pub(crate) struct VolWriter {
     w: Box<dyn Write>,
 }
 
 impl VolWriter {
-    fn create(path: &Path, h: &NiftiHeader, dims: &[usize]) -> Result<VolWriter> {
+    pub(crate) fn create(path: &Path, h: &NiftiHeader, dims: &[usize]) -> Result<VolWriter> {
         if let Some(p) = path.parent() {
             std::fs::create_dir_all(p)?;
         }
@@ -209,7 +211,7 @@ impl VolWriter {
         Ok(VolWriter { w })
     }
 
-    fn put(&mut self, v: &A3) -> Result<()> {
+    pub(crate) fn put(&mut self, v: &A3) -> Result<()> {
         let mut bytes = Vec::with_capacity(v.len() * 4);
         for x in v.t().iter() {
             bytes.extend_from_slice(&(*x as f32).to_le_bytes());
@@ -218,7 +220,7 @@ impl VolWriter {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<()> {
+    pub(crate) fn finish(mut self) -> Result<()> {
         self.w.flush()?;
         Ok(())
     }
@@ -233,16 +235,16 @@ fn write_3d(path: &Path, h: &NiftiHeader, v: &A3) -> Result<()> {
 
 // ---------------------------------------------------------------- sidecars and phase encoding
 
-fn stem(p: &Path) -> String {
+pub(crate) fn stem(p: &Path) -> String {
     let s = p.to_string_lossy().to_string();
     s.strip_suffix(".nii.gz").or_else(|| s.strip_suffix(".nii")).unwrap_or(&s).to_string()
 }
 
-fn name(p: &Path) -> String {
+pub(crate) fn name(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
 }
 
-fn sidecar(p: &Path) -> Result<serde_json::Value> {
+pub(crate) fn sidecar(p: &Path) -> Result<serde_json::Value> {
     let j = PathBuf::from(stem(p) + ".json");
     if !j.exists() {
         return Ok(serde_json::Value::Null);
@@ -260,7 +262,7 @@ fn json_f64(m: &serde_json::Value, k: &str) -> Option<f64> {
 }
 
 /// TotalReadoutTime (s) of a sidecar, else EffectiveEchoSpacing x (n_pe - 1) (BIDS).
-fn readout_of(m: &serde_json::Value, n_pe: usize) -> Option<f64> {
+pub(crate) fn readout_of(m: &serde_json::Value, n_pe: usize) -> Option<f64> {
     json_f64(m, "TotalReadoutTime").or_else(|| json_f64(m, "EffectiveEchoSpacing").map(|e| e * (n_pe as f64 - 1.0)))
 }
 
@@ -304,25 +306,139 @@ fn parse_pe(code: &str, aff: &Mat4, f: &Path) -> Result<(usize, f64)> {
     Ok((ax, if s.ends_with('-') { -1.0 } else { 1.0 }))
 }
 
-/// (axis, polarity) of a scan in its voxel axes: JSON, else `given`, else `default` (a world direction), else the
-/// header's dim_info.
-fn phase(n: &Nii, meta: &serde_json::Value, given: Option<&str>, default: Option<[f64; 3]>) -> Result<(usize, f64)> {
+/// (axis, polarity) of a scan in its voxel axes: JSON, else `given`, else `default` (a world direction); without
+/// any, the caller finds it from the data (pair_phase / series_phase).
+pub(crate) fn phase(n: &Nii, meta: &serde_json::Value, given: Option<&str>, default: Option<[f64; 3]>) -> Result<(usize, f64)> {
     if let Some(code) = json_str(meta, "PhaseEncodingDirection").or(given.map(String::from)) {
         return parse_pe(&code, &n.aff, &n.path);
     }
-    if let Some(w) = default {
-        return from_world(&w, &n.aff, &n.path);
+    match default {
+        Some(w) => from_world(&w, &n.aff, &n.path),
+        None => bail!("{}: no PhaseEncodingDirection (JSON) or --pe", name(&n.path)),
     }
-    let ph = (n.header.dim_info >> 2) & 3;
-    if ph == 0 {
-        bail!("{}: no PhaseEncodingDirection (JSON), --pe or dim_info phase axis", name(&n.path));
-    }
-    eprintln!("  Warning: {}: phase axis {} from dim_info, polarity assumed positive (the field sign and the series correction depend on it)", name(&n.path), ph - 1);
-    Ok((ph as usize - 1, 1.0))
 }
 
+// ---------------------------------------------------------------- the phase encoding from the data (no JSON / --pe)
+
+fn known(meta: &serde_json::Value, given: Option<&str>) -> bool {
+    json_str(meta, "PhaseEncodingDirection").is_some() || given.is_some()
+}
+
+fn ncc(a: &A3, b: &A3, m: &Array3<bool>) -> f64 {
+    let (mut n, mut sa, mut sb) = (0.0, 0.0, 0.0);
+    for ((&x, &y), &k) in a.iter().zip(b.iter()).zip(m.iter()) {
+        if k {
+            n += 1.0;
+            sa += x;
+            sb += y;
+        }
+    }
+    let (ma, mb) = (sa / n, sb / n);
+    let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
+    for ((&x, &y), &k) in a.iter().zip(b.iter()).zip(m.iter()) {
+        if k {
+            ab += (x - ma) * (y - mb);
+            aa += (x - ma) * (x - ma);
+            bb += (y - mb) * (y - mb);
+        }
+    }
+    ab / ((aa * bb).sqrt() + 1e-12)
+}
+
+/// The phase axis of a pair from the data: the field estimated along each voxel axis, the axis whose corrected pair
+/// agrees best (NCC in the head mask); with the estimate along it (fwd the positive scan).
+fn pair_axis(fwd: &A3, rev: &A3, n: &Nii, s: &Settings) -> (usize, (A3, Mat4, duope::Info)) {
+    let mut fits = Vec::new();
+    let mut score = [0.0; 3];
+    for ax in 0..3 {
+        let (d, m, info) = duope::estimate(fwd, rev, &n.aff, ax, s.joint, s.alpha, s.max_mm);
+        let cf = duope::unwarp(fwd, &d, &n.aff, ax, None, 1.0);
+        let cr = duope::unwarp(rev, &d, &n.aff, ax, Some(&m), -1.0);
+        score[ax] = ncc(&cf, &cr, &duope::head_mask(&cf, &cr));
+        fits.push((d, m, info));
+    }
+    let ax = (0..3).max_by(|&a, &b| score[a].partial_cmp(&score[b]).unwrap()).unwrap();
+    let dim = (n.header.dim_info >> 2) & 3;
+    if dim != 0 && dim as usize - 1 != ax {
+        eprintln!("  Warning: {}: the data give phase axis {}, the header (dim_info) {}; the data are used", name(&n.path), AXES[ax], AXES[dim as usize - 1]);
+    }
+    eprintln!("  Warning: {}: no PhaseEncodingDirection (JSON) or --pe: phase axis {} from the data (corrected-pair NCC i {:.3}, j {:.3}, k {:.3}), polarity taken as positive (the corrected images do not depend on it, the field sign does)", name(&n.path), AXES[ax], score[0], score[1], score[2]);
+    (ax, fits.into_iter().nth(ax).unwrap())
+}
+
+/// (axis, polarity, the estimate when it came from the data, guessed) of the forward scan: its JSON / --pe, else the
+/// opposite of the reverse scan's JSON, else the axis from the data (polarity +1, guessed).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn pair_phase(fi: &Nii, ri: &Nii, fm: &serde_json::Value, rm: &serde_json::Value, pe: Option<&str>, fwd: &A3, rev: &A3, s: &Settings) -> Result<(usize, f64, Option<(A3, Mat4, duope::Info)>, bool)> {
+    if known(fm, pe) {
+        let (ax, pol) = phase(fi, fm, pe, None)?;
+        return Ok((ax, pol, None, false));
+    }
+    if known(rm, None) {
+        let (ax_r, pol_r) = phase(ri, rm, None, None)?;
+        let (ax, pol) = from_world(&world(ax_r, pol_r, &ri.aff).map(|v| -v), &fi.aff, &fi.path)?;
+        return Ok((ax, pol, None, false));
+    }
+    let (ax, fit) = pair_axis(fwd, rev, fi, s);
+    Ok((ax, 1.0, Some(fit), true))
+}
+
+/// The series' axis, polarity and rigid M (series world -> forward world). Its direction relative to the forward
+/// scan's comes from the data: its b0 / mean unwarped along either direction (the field d moved to its head position),
+/// NCC with the corrected forward image `fixed`. --series-pe is always followed; a JSON direction unless the data
+/// clearly (NCC margin >= SERIES_MARGIN) say the other one. Also "<source> <ncc forward>/<ncc reverse>" for the CSV.
+#[allow(clippy::too_many_arguments)]
+fn series_phase(si: &Nii, sm: &serde_json::Value, spe: Option<&str>, ref_s: &A3, fixed: &A3, aff: &Mat4, d: &A3, w_f: &[f64; 3], guessed_f: bool) -> Result<(usize, f64, Mat4, String)> {
+    let sf = &si.path;
+    let given_ap = if known(sm, spe) {
+        let (ax, pol) = phase(si, sm, spe, None)?;
+        let w_s = world(ax, pol, &si.aff);
+        if dotv(&w_s, w_f).abs() < 0.9 {
+            bail!("{}: phase-encoding direction {}, the field is along {}", name(sf), label(&w_s), label(w_f));
+        }
+        Some((ax, pol, if dotv(&w_s, w_f) > 0.0 { 0 } else { 1 }))
+    } else {
+        None
+    };
+    let mut score = [0.0; 2];
+    let mut ms = Vec::new();
+    for (k, s) in [1.0, -1.0].into_iter().enumerate() {
+        let (ax, pol) = from_world(&w_f.map(|v| s * v), &si.aff, sf)?;
+        let m = duope::series_motion(ref_s, &si.aff, fixed, aff, d, ax, pol);
+        let u = duope::unwarp(ref_s, &duope::field_on(d, aff, &si.aff, ref_s.dim(), Some(&m)), &si.aff, ax, None, pol);
+        let g = linear_transform(fixed, &mat_mul(&mat_inv(aff), &mat_mul(&m, &si.aff)), ref_s.dim());
+        let mask = Zip::from(&duope::head_mask(&u, &u)).and(&g).map_collect(|&h, &v| h && v > 0.0);
+        score[k] = ncc(&u, &g, &mask);
+        ms.push(m);
+    }
+    let best = if score[0] >= score[1] { 0 } else { 1 };
+    let margin = (score[0] - score[1]).abs();
+    let how = format!("NCC {:.3} along the forward scan's direction, {:.3} along the reverse", score[0], score[1]);
+    let side = |k: usize| if k == 0 { "the forward" } else { "the reverse" };
+    let dir = |source: &str| format!("{source} {:.3}/{:.3}", score[0], score[1]);
+    if let (Some((ax, pol, given)), false) = (given_ap, guessed_f) {
+        if spe.is_some() || given == best || margin < SERIES_MARGIN {
+            if given != best {
+                let why = if spe.is_some() { "--series-pe".to_string() } else { format!("JSON (the data are not clear: margin {margin:.3} < {SERIES_MARGIN})") };
+                eprintln!("  Warning: {}: the {why} gives {} scan's direction, the data {} ({how}); {} is used", name(sf), side(given), side(best), if spe.is_some() { "--series-pe" } else { "the JSON" });
+            }
+            return Ok((ax, pol, ms[given], dir(if spe.is_some() { "series_pe" } else { "json" })));
+        }
+        eprintln!("  Warning: {}: its JSON PhaseEncodingDirection gives {} scan's direction, the data clearly {} ({how}); the data are used (give --series-pe to force the JSON one)", name(sf), side(given), side(best));
+    } else if !known(sm, spe) {
+        eprintln!("  Warning: {}: no PhaseEncodingDirection (JSON) or --series-pe: {} scan's direction from the data ({how})", name(sf), side(best));
+    }
+    let source = if given_ap.is_some() && !guessed_f { "data_over_json" } else { "data" };
+    let s = if best == 0 { 1.0 } else { -1.0 };
+    let (ax, pol) = from_world(&w_f.map(|v| s * v), &si.aff, sf)?;
+    Ok((ax, pol, ms[best], dir(source)))
+}
+
+/// The data overrule a series' JSON direction when one direction's NCC is higher by this much.
+const SERIES_MARGIN: f64 = 0.03;
+
 /// The mean of the b < 50 volumes (from the .bval) or of all volumes.
-fn b0(n: &Nii) -> Result<A3> {
+pub(crate) fn b0(n: &Nii) -> Result<A3> {
     let nv = n.nvol();
     let mut use_v = vec![true; nv];
     let bv = PathBuf::from(stem(&n.path) + ".bval");
@@ -342,7 +458,7 @@ fn b0(n: &Nii) -> Result<A3> {
     Ok(total / use_v.iter().filter(|&&k| k).count() as f64)
 }
 
-fn same_grid(a: &Nii, b: &Nii) -> bool {
+pub(crate) fn same_grid(a: &Nii, b: &Nii) -> bool {
     a.shape == b.shape && (0..16).all(|k| (a.aff[k / 4][k % 4] - b.aff[k / 4][k % 4]).abs() <= 1e-3)
 }
 
@@ -360,7 +476,7 @@ fn corrected(img: &Nii, ref_: &Nii, disp: &A3, ax: usize, m: Option<&Mat4>, sign
     w.finish()
 }
 
-fn out_path(input: &Path, output: Option<&Path>, postfix: &str) -> PathBuf {
+pub(crate) fn out_path(input: &Path, output: Option<&Path>, postfix: &str) -> PathBuf {
     let base = name(input);
     let st = base.strip_suffix(".nii.gz").or_else(|| base.strip_suffix(".nii")).unwrap_or(&base).to_string();
     let parent = output.map(Path::to_path_buf).unwrap_or_else(|| input.parent().unwrap_or(Path::new(".")).to_path_buf());
@@ -382,7 +498,12 @@ fn one(f: &Path, r: &Path, s: &Settings) -> Result<Row> {
     let t0 = std::time::Instant::now();
     let (fi, ri) = (Nii::open(f)?, Nii::open(r)?);
     let (fm, rm) = (sidecar(f)?, sidecar(r)?);
-    let (ax_f, pol_f) = phase(&fi, &fm, s.pe.as_deref(), None)?;
+    let fwd = b0(&fi)?;
+    let mut rev = b0(&ri)?;
+    if !same_grid(&ri, &fi) {
+        rev = linear_transform(&rev, &mat_mul(&mat_inv(&ri.aff), &fi.aff), fi.dim3());
+    }
+    let (ax_f, pol_f, fit, guessed_f) = pair_phase(&fi, &ri, &fm, &rm, s.pe.as_deref(), &fwd, &rev, s)?;
     let w_f = world(ax_f, pol_f, &fi.aff);
     let (ax_r, pol_r) = phase(&ri, &rm, None, Some(w_f.map(|v| -v)))?;
     let w_r = world(ax_r, pol_r, &ri.aff);
@@ -391,14 +512,12 @@ fn one(f: &Path, r: &Path, s: &Settings) -> Result<Row> {
         bail!("{} / {}: not a reverse phase-encoding pair (directions {} / {}: {} / {} in their voxel axes)", name(f), name(r), label(&w_f), label(&w_r), code(ax_f, pol_f), code(ax_r, pol_r));
     }
     let trt = readout_of(&fm, fi.shape[ax_f]).or(s.readout);
-    let fwd = b0(&fi)?;
-    let mut rev = b0(&ri)?;
-    if !same_grid(&ri, &fi) {
-        rev = linear_transform(&rev, &mat_mul(&mat_inv(&ri.aff), &fi.aff), fi.dim3());
-    }
     // the core takes the positive polarity first; d is its displacement, M moves the negative-polarity scan
     let (pos, neg) = if pol_f > 0.0 { (&fwd, &rev) } else { (&rev, &fwd) };
-    let (d, m, info) = duope::estimate(pos, neg, &fi.aff, ax_f, s.joint);
+    let (d, m, info) = match fit {
+        Some(fit) => fit,
+        None => duope::estimate(pos, neg, &fi.aff, ax_f, s.joint, s.alpha, s.max_mm),
+    };
     let (m_f, m_r) = if pol_f > 0.0 { (None, Some(&m)) } else { (Some(&m), None) };
     let out = s.output.as_deref();
     let fpath = out_path(f, out, "duope");
@@ -413,20 +532,16 @@ fn one(f: &Path, r: &Path, s: &Settings) -> Result<Row> {
     }
 
     let mut moved = Vec::new();
+    let mut dirs = Vec::new();
     if s.series_pe.len() > 1 && s.series_pe.len() != s.series.len() {
         bail!("--series-pe: one per series (or one for all)");
     }
-    let fixed = if !s.series.is_empty() && s.series_align { Some(b0(&Nii::open(&fpath)?)?) } else { None };
+    let fixed = if !s.series.is_empty() { Some(b0(&Nii::open(&fpath)?)?) } else { None };
     for (k, sf) in s.series.iter().enumerate() {
         let si = Nii::open(sf)?;
         let sm = sidecar(sf)?;
         let spe = s.series_pe.get(if s.series_pe.len() == 1 { 0 } else { k }).map(String::as_str);
-        let (ax_s, pol_s) = phase(&si, &sm, spe, Some(w_f))?;
-        let w_s = world(ax_s, pol_s, &si.aff);
-        if dotv(&w_s, &w_f).abs() < 0.9 {
-            bail!("{}: phase-encoding direction {}, the field is along {}", name(sf), label(&w_s), label(&w_f));
-        }
-        let trt_s = readout_of(&sm, si.shape[ax_s]);
+        let trt_s = readout_of(&sm, si.shape[from_world(&w_f, &si.aff, sf)?.0]);
         if !same_grid(&si, &fi) && !(trt_s.is_some() && trt.is_some()) {
             eprintln!("  Warning: {}: another grid than the forward scan and no readout time for both; the displacement in voxels is assumed equal", name(sf));
         }
@@ -435,16 +550,16 @@ fn one(f: &Path, r: &Path, s: &Settings) -> Result<Row> {
             _ => 1.0,
         };
         let ds = &d * scale;
-        let ms = match &fixed {
-            Some(fx) => {
-                let ms = duope::series_motion(&b0(&si)?, &si.aff, fx, &fi.aff, &ds, ax_s, pol_s);
-                let c = [0, 1, 2].map(|a| (si.shape[a] as f64 - 1.0) / 2.0);
-                let cw: [f64; 3] = std::array::from_fn(|i| (0..3).map(|j| si.aff[i][j] * c[j]).sum::<f64>() + si.aff[i][3]);
-                let (mm, deg) = duope::motion_size(&ms, &cw);
-                moved.push(format!("{mm:.2}/{deg:.2}"));
-                Some(ms)
-            }
-            None => None,
+        let (ax_s, pol_s, ms, sdir) = series_phase(&si, &sm, spe, &b0(&si)?, fixed.as_ref().unwrap(), &fi.aff, &ds, &w_f, guessed_f)?;
+        dirs.push(sdir);
+        let ms = if s.series_align {
+            let c = [0, 1, 2].map(|a| (si.shape[a] as f64 - 1.0) / 2.0);
+            let cw: [f64; 3] = std::array::from_fn(|i| (0..3).map(|j| si.aff[i][j] * c[j]).sum::<f64>() + si.aff[i][3]);
+            let (mm, deg) = duope::motion_size(&ms, &cw);
+            moved.push(format!("{mm:.2}/{deg:.2}"));
+            Some(ms)
+        } else {
+            None
         };
         let dsg = duope::field_on(&ds, &fi.aff, &si.aff, si.dim3(), ms.as_ref());
         corrected(&si, &si, &dsg, ax_s, None, pol_s, &out_path(sf, out, "duope"))?;
@@ -465,6 +580,7 @@ fn one(f: &Path, r: &Path, s: &Settings) -> Result<Row> {
         ("seconds", fmt_num(secs, 1)),
         ("series", s.series.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>().join(";")),
         ("series_motion_mm_deg", moved.join(";")),
+        ("series_direction", dirs.join(";")),
     ])
 }
 
@@ -668,6 +784,8 @@ mod tests {
             joint: None,
             save_field: true,
             save_disp: true,
+            alpha: duope::ALPHA,
+            max_mm: duope::MAX_MM,
         };
         let args: Vec<String> = [&fa, &fp].iter().map(|p| p.to_string_lossy().to_string()).collect();
         run(&args, &s).unwrap();
@@ -703,7 +821,7 @@ mod tests {
         let same = dir.join("same.nii.gz");
         save(&same, &[rev.clone()], Some("j"), None);
         let bad: Vec<String> = [&fa, &same].iter().map(|p| p.to_string_lossy().to_string()).collect();
-        let s2 = Settings { output: Some(dir.join("o2")), series: vec![], pe: None, readout: None, series_pe: vec![], series_align: true, joint: None, save_field: false, save_disp: false };
+        let s2 = Settings { output: Some(dir.join("o2")), series: vec![], pe: None, readout: None, series_pe: vec![], series_align: true, joint: None, save_field: false, save_disp: false, alpha: duope::ALPHA, max_mm: duope::MAX_MM };
         assert!(run(&bad, &s2).unwrap_err().to_string().contains("not a reverse phase-encoding pair"));
     }
 

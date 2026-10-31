@@ -134,24 +134,39 @@ def test_bad_pairs(tmp_path, pair):
     assert len(res) == 1 and os.path.exists(res[0]['forward'])
 
 
-def test_no_json_needs_pe_or_dim_info(tmp_path, pair):
+def test_no_json_phase_from_the_data(tmp_path, pair):
     fwd, rev, d_true, inside = pair
     fa, fp = str(tmp_path / 'a.nii.gz'), str(tmp_path / 'b.nii.gz')
     nib.save(nib.Nifti1Image(fwd.astype(np.float32), AFF), fa)
     nib.save(nib.Nifti1Image(rev.astype(np.float32), AFF), fp)
-    with pytest.raises(ValueError, match='PhaseEncodingDirection'):
-        tigerbx.duope(fa, fp, str(tmp_path / 'o1'))
     r = tigerbx.duope(fa, fp, str(tmp_path / 'o2'), pe='j', readout=TRT, save_field=True)
     assert _mae(r['field'].get_fdata() * TRT, d_true, inside) < 0.15
+    ref = r['forward'].get_fdata()
     img = nib.load(fa)
-    img.header.set_dim_info(phase=1)
+    img.header.set_dim_info(phase=0)                         # a wrong header axis: the data win
     nib.save(img, fa)
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter('always')
-        tigerbx.duope(fa, fp, str(tmp_path / 'o3'))
-    assert any('dim_info' in str(x.message) for x in w)
+        r = tigerbx.duope(fa, fp, str(tmp_path / 'o3'))
+    msg = ' '.join(str(x.message) for x in w)
+    assert 'phase axis j from the data' in msg and 'the header (dim_info) i' in msg
+    assert np.abs(r['forward'].get_fdata() - ref)[inside].max() < 1e-3 * ref.max()
     with pytest.raises(ValueError, match='readout time'):
         tigerbx.duope(fa, fp, str(tmp_path / 'o4'), save_field=True)
+
+
+def test_series_direction_from_the_data(tmp_path, pair):
+    # the reverse scan as a series without JSON: found to run along the reverse direction, corrected like the reverse
+    fwd, rev, d_true, inside = pair
+    fa, fp, fs = (str(tmp_path / f'{k}.nii.gz') for k in 'abs')
+    _save(tmp_path, 'a', fwd, 'j')
+    _save(tmp_path, 'b', rev, 'j-')
+    nib.save(nib.Nifti1Image(rev.astype(np.float32), AFF), fs)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        r = tigerbx.duope(fa, fp, str(tmp_path / 'o'), series=fs)
+    assert any("the reverse scan's direction from the data" in str(x.message) for x in w)
+    assert np.abs(r['s'].get_fdata() - r['reverse'].get_fdata())[inside].mean() < 0.02 * rev.max()
 
 
 def test_anatomical_pe_per_pair_and_reoriented_reverse(tmp_path, pair):
@@ -267,3 +282,39 @@ def test_volume_by_volume_writer_matches_nib_save(tmp_path, ext):
     assert np.allclose(a.affine, b.affine) and a.header.get_dim_info() == (0, 1, 2)
     assert a.header.get_xyzt_units() == ('mm', 'sec') and a.header['pixdim'][4] == pytest.approx(1.4)
     assert a.get_data_dtype() == np.dtype('<f4')
+
+
+def test_series_wrong_json_overruled_by_the_data(tmp_path, pair):
+    # the reverse scan as a series whose JSON says the forward direction: the data clearly say reverse and win;
+    # series_pe= is always followed
+    fwd, rev, d_true, inside = pair
+    fa = _save(tmp_path, 'a', fwd, 'j')
+    fp = _save(tmp_path, 'b', rev, 'j-')
+    fs = _save(tmp_path, 's', rev, 'j')                     # wrong
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        r = tigerbx.duope(fa, fp, str(tmp_path / 'o'), series=fs)
+    assert any('the data are used' in str(x.message) for x in w)
+    assert np.abs(r['s'].get_fdata() - r['reverse'].get_fdata())[inside].mean() < 0.02 * rev.max()
+    row = open(str(tmp_path / 'o' / 'duope_summary.csv')).read()
+    assert 'data_over_json' in row
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        r = tigerbx.duope(fa, fp, str(tmp_path / 'o2'), series=fs, series_pe='j')
+    assert any('series_pe is used' in str(x.message) for x in w)
+    assert np.abs(r['s'].get_fdata() - r['reverse'].get_fdata())[inside].mean() > 0.02 * rev.max()
+
+
+def test_field_sign_and_the_native_grid(tmp_path, pair):
+    # a positive field moves the positive-polarity scan's signal towards +axis: the phantom's displacement is
+    # positive inside its blob, so the Hz field written by save_field is positive there (the sign a gradient-echo
+    # field map gives); alpha / max_mm reach the solver (max_mm=0: the native grid, final_level 1)
+    fwd, rev, d_true, inside = pair
+    fa, fp = _save(tmp_path, 'a', fwd, 'j'), _save(tmp_path, 'b', rev, 'j-')
+    r = tigerbx.duope(fa, fp, str(tmp_path / 'o'), save_field=True, alpha=0.05, max_mm=0)
+    hz = r['field'].get_fdata()
+    blob = d_true > 1.0
+    assert hz[blob].mean() * TRT > 0.5 and _mae(hz * TRT, d_true, inside) < 0.15
+    assert core._final_level([1.0, 1.0, 1.0]) == 2 and core._final_level([1.0, 1.0, 1.0], 0) == 1
+    assert core._final_level([1.0, 1.0, 1.0], 8.0) == 8 and core._final_level([2.5, 2.5, 2.5]) == 1
+    assert core.estimate(fwd, rev, AFF, pe_axis=1, max_mm=0)[2]['final_level'] == 1

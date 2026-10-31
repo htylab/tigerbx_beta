@@ -77,6 +77,9 @@ The pipelines are TigerBx's main functions, the same in Python and in the stand-
 | `template` | `tigerbx.template(...)` | `tigerbx data/ -o tpl/ --template` | `template`, `template_mask`, `template_tseg` |
 | `inspect`  | `tigerbx.inspect(...)`  | `tigerbx in.nii.gz --inspect` | `inspect_summary.csv` |
 | `duope`    | `tigerbx.duope(fwd, rev, ...)` | `tigerbx --duope fwd rev` | `<input>_duope` (forward, reverse, series) |
+| `dwimc`    | `tigerbx.dwimc(dwi, reverse=pa)` | `tigerbx --dwimc dwi --reverse pa` | `<dwi>_dwimc`, `.bval`, `.bvec`, `.csv` |
+| `epinorm`  | `tigerbx.epinorm(series, t1, ap, pa)` | —          | `<series>_epi2t1`, `<series>_epi2mni` |
+| `to_epi`   | `tigerbx.to_epi(t1, epi, labels=...)` | —          | `<t1>_t12epi`, `<label>_t12epi` |
 
 ```python
 import tigerbx
@@ -89,7 +92,9 @@ See [pipeline usage](doc/pipelines.md) for the steps, options and outputs of eac
 
 `tigerbx.duope` corrects EPI susceptibility distortion from a pair of scans with opposite phase encoding (AP / PA,
 LR / RL), as FSL topup does, in seconds on the CPU, and can unwarp a DWI or BOLD series with the field. See
-[duope](doc/duope.md).
+[duope](doc/duope.md). `tigerbx.dwimc` corrects head motion and eddy currents of a DWI series (and its
+susceptibility distortion, given reversed-PE b0s) in one resampling: [dwimc](doc/dwimc.md). `tigerbx.epinorm`
+brings a DWI / BOLD series onto the subject's T1 and the template in one resampling: [epinorm](doc/epinorm.md).
 
 ### Inspect your data first
 

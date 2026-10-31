@@ -484,17 +484,24 @@ def head_mask(fwd, rev):
     return ndimage.binary_dilation(ndimage.binary_fill_holes(mean > 0.15 * np.percentile(mean, 99)), iterations=2)
 
 
-def _final_level(zooms):
+def _final_level(zooms, max_mm=MAX_MM):
+    """Block-mean factor f of the finest level: the largest power of 2 whose grid (f x the smallest voxel) stays
+    at or below max_mm; max_mm 0 = the native grid (f = 1)."""
     f = 1
-    while min(zooms) * f * 2 <= MAX_MM:
+    while min(zooms) * f * 2 <= max_mm:
         f *= 2
     return f
 
 
-def estimate(fwd, rev, aff, pe_axis=1, joint='auto', mask=None, margin=6):
+def estimate(fwd, rev, aff, pe_axis=1, joint='auto', mask=None, margin=6, alpha=ALPHA, max_mm=MAX_MM):
     """Displacement d (voxels along `pe_axis`; the forward scan, positive phase-encoding polarity, is unwarped by
     fwd(x + d e)) and the rigid motion M (forward world -> reverse world) of a forward / reverse pair on one grid.
-    joint: 'auto' (field + motion jointly when the motion exceeds 1 mm / 1 degree), True or False.
+    d is in voxels, not Hz: field_hz = d / readout_time of the forward scan (tigerbx.duope save_field); a positive
+    field moves the positive-polarity scan's signal towards +axis. joint: 'auto' (field + motion jointly when the
+    motion exceeds 1 mm / 1 degree), True or False. alpha: bending weight (intensities scaled to p99 = 1); max_mm:
+    the finest estimation grid in mm (the field is solved on block means of f voxels, f the largest power of 2 with
+    f x voxel <= max_mm, and interpolated to the full grid; 0 = the native grid, slower). The defaults are tuned
+    for correcting images; a field map for its own sake (QSM, ...) may want max_mm=0 and a smaller alpha.
     Returns (d, M, info)."""
     t0 = time.time()
     fwd = np.asarray(fwd, np.float64)
@@ -514,11 +521,11 @@ def estimate(fwd, rev, aff, pe_axis=1, joint='auto', mask=None, margin=6):
     shift_aff = np.eye(4)
     shift_aff[:3, 3] = lo
     aff_c = aff_t @ shift_aff                                         # the cropped grid
-    f = _final_level(zooms)
+    f = _final_level(zooms, max_mm)
 
     def solve(rev_arr, start, iters):
         a, p = normalise(F[sl], rev_arr[sl])
-        return refine(a, p, start, f, zooms, iters)
+        return refine(a, p, start, f, zooms, iters, alpha=alpha)
 
     a, p = normalise(F[sl], Rv[sl])
     d = solve(Rv, dipole_start(a, p, zooms, b_vox), 8)
@@ -529,7 +536,7 @@ def estimate(fwd, rev, aff, pe_axis=1, joint='auto', mask=None, margin=6):
     use_joint = (deg > JOINT_DEG or mm > JOINT_MM) if joint == 'auto' else bool(joint)
     if use_joint:
         a, p = normalise(F[sl], Rv[sl])
-        dj, M = Joint(a, p, aff_c, d, M, f).run()
+        dj, M = Joint(a, p, aff_c, d, M, f, prior_alpha=alpha).run()
         d = upsample(dj, a.shape, f)
     else:
         d = solve(move(Rv, aff_t, M), d, 5)

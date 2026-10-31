@@ -5,8 +5,11 @@
 
 The phase-encoding axis and polarity of each scan and the total readout time come from the BIDS JSON sidecars
 (PhaseEncodingDirection, TotalReadoutTime), else from `pe` / `readout` (`pe` also as an anatomical direction, 'AP',
-'PA', 'LR', ..., converted with the scan's affine), else the axis from the header's dim_info (polarity then assumed
-positive for `forward`, with a warning). The reverse scan's direction is compared in world space, so it may be
+'PA', 'LR', ..., converted with the scan's affine), else from the data (with a warning): the phase axis is the one
+along which the corrected pair agrees best (the polarity is then taken as positive: the corrected images do not depend
+on it, the field's sign does), and a series runs along the forward or the reverse scan's direction by which of the two
+unwarps it onto the corrected forward scan. A series' JSON direction is checked against the data. The reverse scan's
+direction is compared in world space, so it may be
 stored in another orientation. A 4D input contributes the mean of its b < 50 volumes
 (from its .bval) or of all volumes. All displacements are in NIfTI voxel axes (unlike FSL, which flips voxel x of
 images with a positive-determinant affine).
@@ -39,7 +42,8 @@ SUMMARY_NAME = 'duope_summary.csv'
 
 
 def duope(forward, reverse, output=None, *, series=None, pe=None, readout=None, series_pe=None, series_align=True,
-          joint='auto', save_field=False, save_disp=False, gz=True, verbose=0):
+          joint='auto', alpha=core.ALPHA, max_mm=core.MAX_MM, save_field=False, save_disp=False,
+          resume=False, gz=True, verbose=0):
     """Estimate the field of a forward / reverse phase-encoding pair and unwarp it (and optional series).
 
     forward, reverse: the two scans (NIfTI paths; or equal-length lists of pairs). series: a DWI / BOLD series (or a
@@ -51,7 +55,10 @@ def duope(forward, reverse, output=None, *, series=None, pe=None, readout=None, 
     without JSON is taken as the opposite. readout: the forward scan's total readout time in s. series_pe: the
     direction of a series without JSON (default: the forward scan's), one per series for a list. For a list of
     pairs, pe / readout / series_pe may be lists with one entry per pair. joint: 'auto' (field and motion jointly when the motion between the scans exceeds 1 mm /
-    1 degree), True or False.
+    1 degree), True or False. alpha / max_mm: the field's bending weight and its finest estimation grid in mm (0 =
+    the native grid), as core.duope.estimate; the defaults are tuned for correcting images, a field map for its own
+    sake (QSM, ...) may want max_mm=0 and a smaller alpha. resume: skip pairs whose <forward>_duope is already
+    there (continuing a batch; they are left out of the list).
 
     Outputs: every input corrected, all its volumes, as <input>_duope (forward, reverse and each series; one cubic
     resampling with the motion of its scan); save_field: <forward>_duope_field in Hz (a positive-polarity scan moves
@@ -75,8 +82,11 @@ def duope(forward, reverse, output=None, *, series=None, pe=None, readout=None, 
                                  ((pe, 'pe'), (readout, 'readout'), (series_pe, 'series_pe')))
     results, failed, rows = [], [], []
     for (f, r), s, p, t, sp in zip(pairs, series, pes, readouts, series_pes):
+        if resume and os.path.isfile(get_template(f, output, gz)[0].replace('@@@@', 'duope')):
+            continue
         try:
-            images, saved, row = _one(f, r, s, output, p, t, sp, series_align, joint, save_field, save_disp, gz,
+            images, saved, row = _one(f, r, s, output, p, t, sp, series_align,
+                                      dict(joint=joint, alpha=alpha, max_mm=max_mm), save_field, save_disp, gz,
                                       verbose)
             rows.append(row)
         except Exception as exc:                 # noqa: BLE001 - one bad pair must not stop a batch
@@ -187,18 +197,13 @@ def _parse(code, aff, f):
 
 def _phase(img, meta, given, f, default=None):
     """(axis, polarity +1 / -1) of a scan in its voxel axes: JSON, else `given` (code or anatomical), else `default`
-    (a world direction), else the header's dim_info."""
+    (a world direction); without any, the caller finds it from the data (_pair_phase / _series_phase)."""
     code = meta.get('PhaseEncodingDirection') or given
     if code:
         return _parse(code, img.affine, f)
-    if default is not None:
-        return _from_world(default, img.affine, f)
-    phase = img.header.get_dim_info()[1] if hasattr(img.header, 'get_dim_info') else None
-    if phase is None:
-        raise ValueError(f'{os.path.basename(f)}: no PhaseEncodingDirection (JSON), pe= or dim_info phase axis')
-    warnings.warn(f'{os.path.basename(f)}: phase axis {phase} from dim_info, polarity assumed positive (the field '
-                  'sign and the series correction depend on it)', RuntimeWarning, stacklevel=4)
-    return int(phase), 1
+    if default is None:
+        raise ValueError(f'{os.path.basename(f)}: no PhaseEncodingDirection (JSON) or pe=')
+    return _from_world(default, img.affine, f)
 
 
 def _same_grid(img, ref):
@@ -211,6 +216,107 @@ def _on_grid(data, img, ref):
         return data
     vox = np.linalg.inv(img.affine) @ ref.affine
     return ndimage.affine_transform(data, vox[:3, :3], vox[:3, 3], output_shape=ref.shape[:3], order=1)
+
+
+# ---------------------------------------------------------------- the phase encoding from the data (no JSON / pe)
+
+def _known(meta, given):
+    return bool(meta.get('PhaseEncodingDirection') or given)
+
+
+def _ncc(a, b, m):
+    a, b = a[m] - a[m].mean(), b[m] - b[m].mean()
+    return float(a @ b / np.sqrt((a @ a) * (b @ b) + 1e-12))
+
+
+def _pair_axis(fwd, rev, img, f, est):
+    """The phase axis of a pair from the data: the field estimated along each voxel axis, the axis whose corrected
+    pair agrees best (NCC in the head mask). Returns (axis, (d, M, info) along it with fwd as the positive scan)."""
+    aff, fits, score = img.affine, {}, {}
+    for ax in range(3):
+        d, M, info = core.estimate(fwd, rev, aff, pe_axis=ax, **est)
+        cf, cr = core.unwarp(fwd, d, aff, ax, sign=1.0), core.unwarp(rev, d, aff, ax, M=M, sign=-1.0)
+        fits[ax], score[ax] = (d, M, info), _ncc(cf, cr, core.head_mask(cf, cr))
+    ax = max(score, key=score.get)
+    dim = img.header.get_dim_info()[1] if hasattr(img.header, 'get_dim_info') else None
+    if dim is not None and int(dim) != ax:
+        warnings.warn(f'{os.path.basename(f)}: the data give phase axis {_AXES[ax]}, the header (dim_info) '
+                      f'{_AXES[int(dim)]}; the data are used', RuntimeWarning, stacklevel=5)
+    warnings.warn(f'{os.path.basename(f)}: no PhaseEncodingDirection (JSON) or pe=: phase axis {_AXES[ax]} from the '
+                  f'data (corrected-pair NCC {", ".join(f"{_AXES[a]} {s:.3f}" for a, s in score.items())}), polarity '
+                  'taken as positive (the corrected images do not depend on it, the field sign does)',
+                  RuntimeWarning, stacklevel=5)
+    return ax, fits[ax]
+
+
+def _pair_phase(fi, ri, fm, rm, pe, f, r, fwd, rev, est):
+    """(axis, polarity, (d, M, info) or None, guessed) of the forward scan: its JSON / pe, else the opposite of the
+    reverse scan's JSON, else the axis from the data (polarity +1, guessed)."""
+    if _known(fm, pe):
+        return (*_phase(fi, fm, pe, f), None, False)
+    if _known(rm, None):
+        ax_r, pol_r = _phase(ri, rm, None, r)
+        return (*_from_world(-_world(ax_r, pol_r, ri.affine), fi.affine, f), None, False)
+    ax, fit = _pair_axis(fwd, rev, fi, f, est)
+    return ax, 1, fit, True
+
+
+def _series_direction(ref_s, s_aff, fixed, aff, d, w_f, sf):
+    """Whether a series runs along the forward scan's direction w_f (+1) or the opposite (-1), from the data: its
+    b0 / mean unwarped either way (the field d, forward grid, moved to its head position), NCC with the corrected
+    forward image `fixed`. Returns (sign, its rigid M series world -> forward world)."""
+    score, Ms = {}, {}
+    for s in (1, -1):
+        ax, pol = _from_world(s * w_f, s_aff, sf)
+        Ms[s] = core.series_motion(ref_s, s_aff, fixed, aff, d, ax, pol)
+        u = core.unwarp(ref_s, core.field_on(d, aff, s_aff, ref_s.shape, Ms[s]), s_aff, ax, sign=pol)
+        v = np.linalg.inv(aff) @ Ms[s] @ s_aff
+        g = ndimage.affine_transform(np.asarray(fixed, np.float64), v[:3, :3], v[:3, 3], output_shape=ref_s.shape,
+                                     order=1)
+        score[s] = _ncc(u, g, core.head_mask(u, u) & (g > 0))
+    return max(score, key=score.get), Ms, score
+
+
+SERIES_MARGIN = 0.03   # the data overrule a series' JSON direction when one direction's NCC is higher by this much
+
+
+def _series_phase(si, sm, spe, sf, ref_s, fixed, aff, d, w_f, guessed_f):
+    """(axis, polarity, M series world -> forward world, info) of a series. Its direction relative to the forward
+    scan's comes from the data (its b0 / mean unwarped either way onto the corrected forward scan); series_pe= is
+    always followed; a JSON direction is followed unless the data clearly (NCC margin >= SERIES_MARGIN) say the
+    other one. info: source ('series_pe', 'json', 'data', 'data_over_json') and the two NCCs."""
+    given = None
+    if _known(sm, spe):
+        ax, pol = _phase(si, sm, spe, sf)
+        if abs(_world(ax, pol, si.affine) @ w_f) < 0.9:
+            raise ValueError(f'{os.path.basename(sf)}: phase-encoding direction '
+                             f'{_label(_world(ax, pol, si.affine))}, the field is along {_label(w_f)}')
+        if not guessed_f:                         # its direction relative to the forward scan's is known
+            given = 1 if _world(ax, pol, si.affine) @ w_f > 0 else -1
+    s, Ms, score = _series_direction(ref_s, si.affine, fixed, aff, d, w_f, sf)
+    margin = abs(score[1] - score[-1])
+    how = f'NCC {score[1]:.3f} along the forward scan\'s direction, {score[-1]:.3f} along the reverse'
+    side = lambda v: 'the forward' if v > 0 else 'the reverse'
+    name = os.path.basename(sf)
+    info = dict(ncc_forward=score[1], ncc_reverse=score[-1])
+    if given is not None and (spe or given == s or margin < SERIES_MARGIN):
+        if given != s:
+            why = 'series_pe' if spe else f'JSON (the data are not clear: margin {margin:.3f} < {SERIES_MARGIN})'
+            warnings.warn(f'{name}: the {why} gives {side(given)} scan\'s direction, the data {side(s)} ({how}); '
+                          f'{"series_pe" if spe else "the JSON"} is used', RuntimeWarning, stacklevel=5)
+        return ax, pol, Ms[given], dict(info, source='series_pe' if spe else 'json')
+    if given is not None:
+        warnings.warn(f'{name}: its JSON PhaseEncodingDirection gives {side(given)} scan\'s direction, the data '
+                      f'clearly {side(s)} ({how}); the data are used (give series_pe= to force the JSON one)',
+                      RuntimeWarning, stacklevel=5)
+        source = 'data_over_json'
+    else:
+        if not _known(sm, spe):
+            warnings.warn(f'{name}: no PhaseEncodingDirection (JSON) or series_pe=: {side(s)} scan\'s direction '
+                          f'from the data ({how})', RuntimeWarning, stacklevel=5)
+        source = 'data'
+    ax, pol = _from_world(s * w_f, si.affine, sf)
+    return ax, pol, Ms[s], dict(info, source=source)
 
 
 def _write_summary(folder, rows):
@@ -246,11 +352,13 @@ def _corrected(img, ref, disp, ax, ftemplate, M=None, sign=1.0):
     return path, nib.load(path)
 
 
-def _one(f, r, series, output, pe, readout, series_pe, series_align, joint, save_field, save_disp, gz, verbose):
+def _one(f, r, series, output, pe, readout, series_pe, series_align, est, save_field, save_disp, gz, verbose):
     t0 = time.time()
     fi, ri = load_nifti(f), load_nifti(r)
     fm, rm = _json(f), _json(r)
-    ax_f, pol_f = _phase(fi, fm, pe, f)
+    fwd = _b0(fi, f)
+    rev = _on_grid(_b0(ri, r), ri, fi)
+    ax_f, pol_f, fit, guessed_f = _pair_phase(fi, ri, fm, rm, pe, f, r, fwd, rev, est)
     w_f = _world(ax_f, pol_f, fi.affine)
     ax_r, pol_r = _phase(ri, rm, None, r, default=-w_f)
     w_r = _world(ax_r, pol_r, ri.affine)
@@ -259,11 +367,9 @@ def _one(f, r, series, output, pe, readout, series_pe, series_align, joint, save
                          f'(directions {_label(w_f)} / {_label(w_r)}: {_AXES[ax_f]}{"-" if pol_f < 0 else ""} / '
                          f'{_AXES[ax_r]}{"-" if pol_r < 0 else ""} in their voxel axes)')
     trt = _readout(fm, fi.shape[ax_f]) or readout
-    fwd = _b0(fi, f)
-    rev = _on_grid(_b0(ri, r), ri, fi)
     aff = fi.affine
     pos, neg = (fwd, rev) if pol_f > 0 else (rev, fwd)          # the core takes the positive polarity first
-    d, M, info = core.estimate(pos, neg, aff, pe_axis=ax_f, joint=joint)
+    d, M, info = fit or core.estimate(pos, neg, aff, pe_axis=ax_f, **est)
     # d is the positive-polarity scan's displacement; M moves the negative-polarity scan
     m_f, m_r = (None, M) if pol_f > 0 else (M, None)
     ftemplate, _ = get_template(f, output, gz)
@@ -289,26 +395,25 @@ def _one(f, r, series, output, pe, readout, series_pe, series_align, joint, save
     spes = list(series_pe) if isinstance(series_pe, (list, tuple)) else [series_pe] * len(series)
     if len(spes) != len(series):
         raise ValueError('series_pe: one entry per series')
-    fixed = _b0(images['forward'], f) if series and series_align else None      # in the field's head position
-    moved = []
+    fixed = _b0(images['forward'], f) if series else None      # in the field's head position
+    moved, dirs = [], []
     for sf, spe in zip(series, spes):
         si = nib.load(sf, keep_file_open=True)               # read in blocks; non-finite voxels set to 0 there
         sm = _json(sf)
-        ax_s, pol_s = _phase(si, sm, spe, sf, default=w_f)
-        if abs(_world(ax_s, pol_s, si.affine) @ w_f) < 0.9:
-            raise ValueError(f'{os.path.basename(sf)}: phase-encoding direction '
-                             f'{_label(_world(ax_s, pol_s, si.affine))}, the field is along {_label(w_f)}')
-        trt_s = _readout(sm, si.shape[ax_s])
+        trt_s = _readout(sm, si.shape[_from_world(w_f, si.affine, sf)[0]])
         if not _same_grid(si, fi) and not (trt_s and trt):
             warnings.warn(f'{os.path.basename(sf)}: another grid than the forward scan and no readout time for both; '
                           'the displacement in voxels is assumed equal', RuntimeWarning, stacklevel=4)
         scale = trt_s / trt if (trt_s and trt) else 1.0
         # the displacement in voxels (field x readout time) along the phase direction, moved to the series' head
-        M_s = None
+        ax_s, pol_s, M_s, sinfo = _series_phase(si, sm, spe, sf, _b0(si, sf), fixed, aff, scale * d, w_f,
+                                                guessed_f)
+        dirs.append('%s %.3f/%.3f' % (sinfo['source'], sinfo['ncc_forward'], sinfo['ncc_reverse']))
         if series_align:
-            M_s = core.series_motion(_b0(si, sf), si.affine, fixed, aff, scale * d, ax_s, pol_s)
             c = (si.affine @ np.r_[(np.array(si.shape[:3]) - 1) / 2, 1])[:3]
             moved.append('%.2f/%.2f' % core.motion_size(M_s, c))
+        else:
+            M_s = None
         stemplate, _ = get_template(sf, output, gz)
         key = os.path.basename(sf).split('.')[0]
         saved[key], images[key] = _corrected(si, si, core.field_on(scale * d, aff, si.affine, si.shape[:3], M_s),
@@ -318,7 +423,8 @@ def _one(f, r, series, output, pe, readout, series_pe, series_align, joint, save
                readout_s=trt or '',
                motion_mm=round(info['motion_mm'], 3), motion_deg=round(info['motion_deg'], 3),
                joint=info['joint'], seconds=round(time.time() - t0, 1),
-               series=';'.join(series), series_motion_mm_deg=';'.join(moved))
+               series=';'.join(series), series_motion_mm_deg=';'.join(moved),
+               series_direction=';'.join(dirs))
     if verbose >= 1:
         _logger.info('%s: motion %.2f mm / %.2f deg, joint %s, %.1f s', os.path.basename(f), info['motion_mm'],
                      info['motion_deg'], info['joint'], time.time() - t0)
