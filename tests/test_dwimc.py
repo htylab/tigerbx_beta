@@ -74,6 +74,24 @@ def _series(n_dir=16, seed=2, ec_scale=1.0, aniso=1.0):
     return np.stack(vols, -1).astype(np.float32), b, gv, mask, np.array(Ms), np.array(cs)
 
 
+def _b0_with_dark_core():
+    """A bright head with a dark deep region that a one-voxel channel joins to the outside (a 3D fill keeps it out)."""
+    x, y, z = np.indices((40, 40, 30))
+    head = ((x - 20) / 16.0) ** 2 + ((y - 20) / 16.0) ** 2 + ((z - 15) / 12.0) ** 2 < 1
+    core_ = ((x - 20) / 5.0) ** 2 + ((y - 20) / 5.0) ** 2 + ((z - 15) / 4.0) ** 2 < 1
+    b0 = np.where(head, 1000.0, 0.0)
+    b0[core_] = 50.0
+    b0[20, 20, 15:] = 0.0                                    # the channel to the top of the head
+    return b0, core_
+
+
+def test_head_mask_has_no_holes():
+    b0, core_ = _b0_with_dark_core()
+    assert not ndimage.binary_fill_holes(b0 > 150)[core_].all()      # the case: a 3D fill leaves the hole
+    m = core.head_mask(b0)
+    assert m[core_].all()
+
+
 def test_line_inverse_inverts_a_monotone_map():
     rng = np.random.default_rng(0)
     F = ndimage.gaussian_filter(rng.normal(size=(4, 30, 3)), (0, 4, 0))

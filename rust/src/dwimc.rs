@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use ndarray::{Array3, Axis, Zip};
+use ndarray::{Array2, Array3, ArrayView2, Axis, Zip};
 use rayon::prelude::*;
 
 use crate::duope::{self, dilate, gaussian, linear_nearest, percentile, A3};
@@ -819,9 +819,49 @@ fn anchor(moving: &A3, fixed: &A3, mask: &Array3<bool>, zooms: &V3, outer: usize
 
 // ---------------------------------------------------------------- driver
 
+/// One 2D slice with its holes filled (4-connected background reached from the slice border stays background).
+fn fill_holes_2d(s: ArrayView2<bool>) -> Array2<bool> {
+    let d = s.dim();
+    let mut reached = Array2::from_elem(d, false);
+    let mut stack = Vec::new();
+    for ((i, j), &v) in s.indexed_iter() {
+        if !v && (i == 0 || j == 0 || i == d.0 - 1 || j == d.1 - 1) {
+            reached[[i, j]] = true;
+            stack.push((i, j));
+        }
+    }
+    while let Some((i, j)) = stack.pop() {
+        for (a, b) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
+            let (x, y) = (i as isize + a, j as isize + b);
+            if x < 0 || y < 0 || x >= d.0 as isize || y >= d.1 as isize {
+                continue;
+            }
+            let p = (x as usize, y as usize);
+            if !s[p] && !reached[p] {
+                reached[p] = true;
+                stack.push(p);
+            }
+        }
+    }
+    reached.mapv(|r| !r)
+}
+
+/// Holes filled in 3D and then slice by slice along every axis (as tigerbx.core.dwimc.fill_holes: dark deep grey
+/// matter in a b0 can open a hole to the outside through one slice, which a 3D fill alone leaves).
+pub fn fill_holes(m: &Array3<bool>) -> Array3<bool> {
+    let mut m = duope::fill_holes(m);
+    for ax in 0..3 {
+        for k in 0..m.len_of(Axis(ax)) {
+            let f = fill_holes_2d(m.index_axis(Axis(ax), k));
+            m.index_axis_mut(Axis(ax), k).assign(&f);
+        }
+    }
+    m
+}
+
 pub fn head_mask(b0: &A3) -> Array3<bool> {
     let t = 0.15 * percentile(b0, 99.0);
-    let m = duope::fill_holes(&b0.mapv(|v| v > t));
+    let m = fill_holes(&b0.mapv(|v| v > t));
     // the largest 6-connected component
     let d = m.dim();
     let mut lab = Array3::<u32>::zeros(d);
@@ -852,7 +892,7 @@ pub fn head_mask(b0: &A3) -> Array3<bool> {
         sizes.push(n);
     }
     let best = (1..sizes.len()).max_by_key(|&s| sizes[s]).unwrap_or(0) as u32;
-    duope::erode(&lab.mapv(|l| best > 0 && l == best), 2)
+    fill_holes(&duope::erode(&lab.mapv(|l| best > 0 && l == best), 2))
 }
 
 pub struct Estimate {
@@ -1226,6 +1266,34 @@ pub fn run(inputs: &[String], s: &Settings) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn head_mask_has_no_holes() {
+        // a bright head with a dark deep region joined to the outside by a one-voxel channel (a 3D fill keeps it out)
+        let (nx, ny, nz) = (40, 40, 30);
+        let inside = |i: usize, j: usize, k: usize, rx: f64, rz: f64| {
+            let (a, b, c) = ((i as f64 - 20.0) / rx, (j as f64 - 20.0) / rx, (k as f64 - 15.0) / rz);
+            a * a + b * b + c * c < 1.0
+        };
+        let b0 = A3::from_shape_fn((nx, ny, nz), |(i, j, k)| {
+            if i == 20 && j == 20 && k >= 15 {
+                0.0
+            } else if inside(i, j, k, 5.0, 4.0) {
+                50.0
+            } else if inside(i, j, k, 16.0, 12.0) {
+                1000.0
+            } else {
+                0.0
+            }
+        });
+        assert!(!duope::fill_holes(&b0.mapv(|v| v > 150.0))[[20, 20, 15]]);
+        let m = head_mask(&b0);
+        for ((i, j, k), &v) in m.indexed_iter() {
+            if inside(i, j, k, 5.0, 4.0) {
+                assert!(v, "hole at {i} {j} {k}");
+            }
+        }
+    }
 
     #[test]
     fn line_inverse_inverts_a_monotone_map() {

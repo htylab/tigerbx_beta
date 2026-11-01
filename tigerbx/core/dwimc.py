@@ -338,12 +338,21 @@ class _Pool:
             return pool.map(fn, items)
 
 
+def fill_holes(m):
+    """Holes filled in 3D and then slice by slice along every axis (dark deep grey matter in a b0 can open a hole to
+    the outside through one slice, which a 3D fill alone leaves)."""
+    m = ndimage.binary_fill_holes(m)
+    for ax in range(3):
+        m = np.moveaxis(np.stack([ndimage.binary_fill_holes(s) for s in np.moveaxis(m, ax, 0)]), 0, ax)
+    return m
+
+
 def head_mask(b0):
-    m = ndimage.binary_fill_holes(b0 > 0.15 * np.percentile(b0, 99))
+    m = fill_holes(b0 > 0.15 * np.percentile(b0, 99))
     lab, n = ndimage.label(m)
     if n > 1:
         m = lab == (np.argmax(np.bincount(lab.ravel())[1:]) + 1)
-    return ndimage.binary_erosion(m, iterations=2)
+    return fill_holes(ndimage.binary_erosion(m, iterations=2))
 
 
 def estimate(data, bval, bvec, zooms, field=None, mask=None, order=2, outer=OUTER, fwhm=FWHM, gn_iters=GN_ITERS,
