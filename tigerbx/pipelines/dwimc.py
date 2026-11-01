@@ -9,11 +9,13 @@ eddy currents are corrected.
 import csv
 import logging
 import os
+import tempfile
 import time
 import warnings
 
 import nibabel as nib
 import numpy as np
+from scipy import ndimage
 
 from tigerbx.core import dwimc as core
 from tigerbx.core import duope
@@ -25,6 +27,39 @@ _logger.addHandler(logging.NullHandler())
 
 
 
+def _brain_mask(kind, data, b, disp, ax, img, gpu=False):
+    """The estimation mask on the input grid (the frame of the first b0), or None for core's threshold mask.
+    kind: 'tbx' (tBX on the mean b0, unwarped by the susceptibility displacement when there is one; the threshold
+    mask, with a warning, if tBX is unavailable or its mask is implausible), 'threshold', or a mask file."""
+    if kind is None or kind == 'threshold':
+        return None
+    if kind != 'tbx':
+        mi = nib.load(kind)
+        return _on_grid(np.asarray(mi.dataobj, np.float64), mi, img) > 0.5
+    b0 = data[..., b < core.B0_MAX].mean(-1).astype(np.float64)
+    if disp is not None:                                   # observed at x + disp along ax: back to the head frame
+        x = np.indices(b0.shape, np.float64)
+        x[ax] += disp
+        b0 = ndimage.map_coordinates(b0, x, order=3, mode='nearest') * (1 + np.gradient(disp, axis=ax))
+    try:
+        from tigerbx.core import models
+        from tigerbx.modules.bx import produce_tbxmask
+        with tempfile.TemporaryDirectory() as td:
+            f = os.path.join(td, 'b0.nii.gz')
+            nib.save(nib.Nifti1Image(np.maximum(b0, 0).astype(np.float32), img.affine), f)
+            m = np.asarray(produce_tbxmask(models.TBX, f, GPU=gpu).dataobj) > 0
+    except Exception as exc:                     # noqa: BLE001 - fall back, the mask only guides the estimation
+        warnings.warn(f'dwimc: tBX mask unavailable ({type(exc).__name__}: {exc}); using the threshold mask',
+                      RuntimeWarning, stacklevel=3)
+        return None
+    ref = core.head_mask(b0)
+    if not 0.5 * ref.sum() < m.sum() < 2.0 * ref.sum():
+        warnings.warn(f'dwimc: the tBX mask ({int(m.sum())} voxels) is implausible against the threshold mask '
+                      f'({int(ref.sum())}); using the threshold mask', RuntimeWarning, stacklevel=3)
+        return None
+    return m
+
+
 def _ec_names(order_t, K):
     """EC column names in the input's voxel axes (i, j, k): const, then the linear and quadratic terms."""
     a, b, c = ('ijk'[order_t[0]], 'ijk'[order_t[1]], 'ijk'[order_t[2]])
@@ -32,7 +67,7 @@ def _ec_names(order_t, K):
 
 
 def dwimc(input, output=None, *, reverse=None, field=None, bval=None, bvec=None, pe=None, readout=None, order=2,
-          iters=core.OUTER, workers=None, resume=False, gz=True, verbose=0):
+          iters=core.OUTER, workers=None, mask='threshold', gpu=False, resume=False, gz=True, verbose=0):
     """Correct head motion and eddy currents (and susceptibility distortion, given `reverse` or `field`) of a DWI
     series in one cubic resampling.
 
@@ -41,7 +76,9 @@ def dwimc(input, output=None, *, reverse=None, field=None, bval=None, bvec=None,
     from them and the series' b0s. field: instead, a field in Hz (as tigerbx.duope save_field) with the readout time
     (JSON or `readout`). pe: the series' phase-encoding direction when there is no JSON ('j', 'j-', 'AP', ...).
     order: the eddy-current polynomial (1: linear, 2: quadratic). iters: outer iterations. workers: processes
-    (default 70% of the CPUs). resume: skip inputs whose output is already there.
+    (default 70% of the CPUs). mask: the voxels the estimation uses: 'threshold' (the b0 intensity head mask),
+    'tbx' (tBX on the mean b0, unwarped by the field when there is one; gpu: tBX on the GPU) or a mask file on the
+    input grid. resume: skip inputs whose output is already there.
 
     Outputs per input: <input>_dwimc (corrected series in the frame of its first b0), <input>_dwimc.bval / .bvec
     (bvecs rotated by each volume's head rotation) and <input>_dwimc.csv (per volume: b, translation mm, rotation
@@ -70,7 +107,7 @@ def dwimc(input, output=None, *, reverse=None, field=None, bval=None, bvec=None,
                 _logger.info('%s: output exists, skipped', os.path.basename(f))
                 continue
             out.append(_one(f, ftemplate, revs[k], fields[k], bvals[k], bvecs[k], pe, readout, order, iters, workers,
-                            verbose))
+                            verbose, mask, gpu))
         except Exception as exc:                 # noqa: BLE001 - one bad input must not stop a batch
             if n == 1:
                 raise
@@ -87,7 +124,8 @@ def _flip(aff):
     return np.diag([-1.0 if np.linalg.det(aff[:3, :3]) > 0 else 1.0, 1.0, 1.0])
 
 
-def _one(f, ftemplate, reverse, field, bval, bvec, pe, readout, order, iters, workers, verbose):
+def _one(f, ftemplate, reverse, field, bval, bvec, pe, readout, order, iters, workers, verbose, mask='threshold',
+         gpu=False):
     t0 = time.time()
     img = load_nifti(f)
     if img.ndim != 4:
@@ -124,9 +162,10 @@ def _one(f, ftemplate, reverse, field, bval, bvec, pe, readout, order, iters, wo
     order_t = core.SWAP[ax]
     tr = lambda a: np.transpose(a, order_t + (3,)) if a.ndim == 4 else np.transpose(a, order_t)
     P = np.eye(4)[list(order_t) + [3]]                   # voxel axes permutation (its own inverse)
+    m = _brain_mask(mask, data, b, disp, ax, img, gpu)
     est = core.estimate(tr(data), b, g_vox[:, list(order_t)], zooms[list(order_t)],
-                        field=None if disp is None else tr(disp), order=order, outer=iters, workers=workers,
-                        verbose=verbose)
+                        field=None if disp is None else tr(disp), mask=None if m is None else tr(m), order=order,
+                        outer=iters, workers=workers, verbose=verbose)
     rms = []
 
     def volumes():

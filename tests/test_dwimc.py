@@ -167,6 +167,23 @@ def test_dwimc_pipeline_writes_outputs(tmp_path):
     assert again == []
 
 
+def test_dwimc_mask_option(tmp_path, monkeypatch):
+    import importlib
+    pipe = importlib.import_module('tigerbx.pipelines.dwimc')       # the module (the package exports the function)
+    data, b, _, mask, _, _ = _series(seed=4)
+    img = nib.Nifti1Image(data, AFF)
+    assert pipe._brain_mask('threshold', data, b, None, 1, img) is None           # core's own head mask
+    mf = str(tmp_path / 'mask.nii.gz')
+    nib.save(nib.Nifti1Image(mask.astype(np.uint8), AFF), mf)
+    assert np.array_equal(pipe._brain_mask(mf, data, b, None, 1, img), mask)       # a mask file on the grid
+
+    def no_model(*a, **k):
+        raise RuntimeError('no model')
+    monkeypatch.setattr('tigerbx.modules.bx.produce_tbxmask', no_model)
+    with pytest.warns(RuntimeWarning, match='threshold mask'):
+        assert pipe._brain_mask('tbx', data, b, None, 1, img) is None              # falls back
+
+
 def test_dwimc_rejects_a_series_without_b0(tmp_path):
     data, b, g, _, _, _ = _series()
     f = str(tmp_path / 'x_dwi.nii.gz')

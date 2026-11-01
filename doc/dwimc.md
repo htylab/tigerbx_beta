@@ -31,6 +31,8 @@ tigerbx --dwimc dwi1.nii.gz dwi2.nii.gz -o out/ --reverse pa1.nii.gz --reverse p
 | `order` | `2` | Eddy-current polynomial along the phase axis: `1` linear, `2` quadratic (executable: `--ec-order`) |
 | `iters` | `3` | Outer iterations (the first on images smoothed to 8 mm FWHM; executable: `--dwimc-iters`) |
 | `workers` | 70% of the CPUs | Processes for the per-volume steps (one process where `fork` is unavailable) |
+| `mask` | `'threshold'` | Voxels the estimation uses: `'threshold'` (b0 intensity head mask, holes filled), `'tbx'` (tBX on the mean b0, unwarped by the field when there is one; falls back to the threshold mask with a warning) or a mask file on the input grid. Python only |
+| `gpu` | `False` | Run tBX on the GPU (`mask='tbx'`) |
 | `resume` | `False` | Skip inputs whose `<input>_dwimc` already exists |
 | `gz`, `verbose` | `True`, `0` | |
 
