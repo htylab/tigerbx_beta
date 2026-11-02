@@ -187,7 +187,7 @@ REMOVED_FLAGS = {'q': 'tBX QC score; see tigerbx.core.qa.image_quality', 'S': 'S
 
 
 def run(argstring, input=None, output=None, model=None, verbose=0,
-        chunk_size=50, continue_=False, silent=False, save_outputs=True):
+        chunk_size=1, continue_=False, silent=False, save_outputs=True):
 
     if silent:
         warnings.warn(
@@ -295,7 +295,7 @@ _SEG_ORDER = ['tseg', 'dgm', 'ct']
 def run_args(args):
     run_d      = vars(args)
     verbose    = run_d.get('verbose', 0)
-    chunk_size = run_d.get('chunk_size', 50)
+    chunk_size = max(1, int(run_d.get('chunk_size') or 1))
     save_outputs = run_d.get('save_outputs', True)
 
     def printer(*msg):
@@ -357,6 +357,9 @@ def run_args(args):
     tbx_model_ff = lib_tool.get_model(omodel['tbx'])
 
     # ── Chunked loop ──────────────────────────────────────────────────────────
+    # chunk_size=1 (default): one file at a time through every model, its images freed before the next file.
+    # A larger chunk_size reuses each ONNX session across the chunk (faster) but keeps every file's tBX
+    # intermediates of the chunk in memory.
     for chunk_start in range(0, len(input_file_list), chunk_size):
         chunk = input_file_list[chunk_start : chunk_start + chunk_size]
         tbx_cache = {}
@@ -427,6 +430,9 @@ def run_args(args):
             del session
 
         tbx_cache.clear()
+        if len(input_file_list) > 1:      # only the file dicts are returned: drop the images now, not at the end
+            for f in chunk:
+                result_accum[f][0] = {}
 
     # ── return (format unchanged) ─────────────────────────────────────────────
     if len(input_file_list) == 1:

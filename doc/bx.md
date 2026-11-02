@@ -12,7 +12,7 @@ Stand-alone executable for tBX / TSEG / template normalisation: `tigerbx data/ -
 
 ```python
 tigerbx.run(argstring, input=None, output=None, model=None,
-            verbose=0, chunk_size=50, continue_=False, silent=False,
+            verbose=0, chunk_size=1, continue_=False, silent=False,
             save_outputs=True)
 ```
 
@@ -23,7 +23,7 @@ tigerbx.run(argstring, input=None, output=None, model=None,
 | `output`     | `str`           | `None`  | Output directory; if `None`, results are saved next to each input file |
 | `model`      | `str` or `dict` | `None`  | Custom model path or override dict; `None` uses bundled defaults |
 | `verbose`    | `int`           | `0`     | Verbosity level: `0` = tqdm progress bars only, `1` = progress messages, `2` = debug |
-| `chunk_size` | `int`           | `50`    | Number of files per session-cache batch. Larger values reuse the ONNX session more aggressively but use more RAM |
+| `chunk_size` | `int`           | `1`     | Files processed together per ONNX session. `1` (default) runs one file at a time with the lowest memory use; larger values reuse each session across the batch (faster) but keep every file's intermediates of the batch in memory |
 | `continue_`  | `bool`          | `False` | Skip files whose output files already exist on disk |
 | `silent`     | `bool`          | `False` | *(Deprecated)* Suppress all output. Use `verbose=0` instead |
 | `save_outputs` | `bool`        | `True`  | Write output files to disk. Set `False` to get in-memory nibabel objects only |
@@ -71,12 +71,12 @@ tigerbx.run('b', 'T1w.nii.gz', 'output_dir')
 tigerbx.run('bmtd', 'T1w.nii.gz', 'output_dir')
 
 # Full pipeline — all output types
-tigerbx.run('bmtcdC', 'T1w.nii.gz', 'output_dir')
+tigerbx.run('bmtcd', 'T1w.nii.gz', 'output_dir')
 
 # Process an entire directory; outputs saved next to each input file
 tigerbx.run('bm', '/data/T1w_dir')
 
-# Batch processing with session cache — 100 files per chunk
+# Faster batches: reuse each session across 100 files (needs more memory)
 tigerbx.run('bmtd', '/data/T1w_dir', '/data/output', chunk_size=100)
 
 # Resume an interrupted run — skip already-processed files
