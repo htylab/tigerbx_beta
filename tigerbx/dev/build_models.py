@@ -8,7 +8,7 @@ entry, which later versions of onnx_optimize add.
 Usage::
 
     python -m tigerbx.dev.build_models                     # rebuild all into ./models_rebuilt and compare
-    python -m tigerbx.dev.build_models out_dir --only TBX  # one model
+    python -m tigerbx.dev.build_models out_dir --only TSEG  # one model
 
 Base files come from the model directory (``lib_tool.get_model``: the cache or TIGERBX_MODEL_DIR; they are kept
 privately, not on the model hub). See
@@ -32,11 +32,17 @@ TSEG_META = {
 
 # released name -> (base export, onnx_optimize arguments, metadata entries set before the optimisation's own)
 BUILDS = {
-    'TBX': ('mprage_bet_v005_mixsynthv4.onnx', ['--labels'], {}),
     'TSEG': ('mprage_aseg43_v0011_allseg.onnx', ['--labels'], TSEG_META),
     'DGM': ('mprage_dgm12_v002_mix6.onnx', ['--labels'], {}),
     'HLC': ('mprage_hlc_v004_resunetplusT2.onnx', ['--heads', HLC_HEADS], {}),
     'GDM': ('vdm_unet3d_v002.onnx', [], {}),
+}
+
+# _opt models made by their own export script, not by onnx_optimize (released as exported): model -> how
+EXTERNAL = {
+    # GroupNorm exported as a two-pass ReduceMean and the dual labels output (outer, inner; not argmax) added at
+    # export. onnx_optimize --labels would take the argmax of the two independent masks, so it must not be used.
+    'TBX': 'dual mask model export script (GroupNorm as two-pass ReduceMean, dual labels output)',
 }
 
 

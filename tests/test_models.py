@@ -21,7 +21,8 @@ def test_every_default_model_has_a_sha256():
 def test_every_opt_model_has_a_build():
     from tigerbx.dev import build_models
     opt = {k for k, v in vars(models).items() if k.isupper() and isinstance(v, str) and v.endswith('_opt.onnx')}
-    assert opt == set(build_models.BUILDS)
+    assert opt == set(build_models.BUILDS) | set(build_models.EXTERNAL)
+    assert not set(build_models.BUILDS) & set(build_models.EXTERNAL)
     assert all(base in models.SHA256 for base, _, _ in build_models.BUILDS.values())
 
 
