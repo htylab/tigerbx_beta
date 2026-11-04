@@ -5,7 +5,8 @@ cached or downloaded file against `SHA256`, and the executable's embedded models
 MODELS) must be listed here (tests/test_models.py). A new model: add its sha256, then change the default.
 """
 
-TBX = 'mprage_tbx_v005_opt.onnx'
+# dual brain mask: outer = the tBX mask (brain with the surrounding CSF), inner (run flag 'i') = without that CSF
+TBX = 'mprage_tbxdual_v007_opt.onnx'
 TSEG = 'mprage_tseg_v0011_opt.onnx'
 DGM = 'mprage_dgm12_v002_opt.onnx'
 CT = 'mprage_mix_ct.onnx'
@@ -38,6 +39,7 @@ SHA256 = {
     'mprage_reg_v005_vfa.onnx': 'b29c4c466e06064b35aa97ec24773aac08b19f16c8923da8cf6c53ae6217a013',
     'mprage_treg_v001.onnx': 'a47961e51a4a26142700d17b0b2dc60fdff2b2f9dd0dc3977d8bf54a3c849b33',
     'mprage_treg_v002.onnx': 'e6fd4edc5e6bae3312f557776acd181df1da65f0433f327e737d82c7513fbdb8',
+    'mprage_tbxdual_v007_opt.onnx': 'c88199b70674c9db172932cbdc4211dfbaf7fd060928316ae204c786dea88c42',
     'mprage_tbx_v005_opt.onnx': '1fdb8ef2c36d1e2dc90e8987e4a9898d6399bb5f3b616d698bb5d192c8e5afa8',
     'mprage_tseg_v0011_opt.onnx': '67b7f553dfd99363f3f89268536986d24d1b79e9ce60760dc4e0ee969f755fe2',
     'vdm_unet3d_v002.onnx': '9357b40da479f4dc85efe2616cab02ad5ffe7f238221070a3769d767a968a97f',

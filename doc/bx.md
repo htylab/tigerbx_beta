@@ -44,7 +44,8 @@ If no segmentation flag is provided, brain extraction (`b`) runs by default.
 | Flag | Output suffix        | Description |
 |------|----------------------|-------------|
 | `b`  | `_tbx`              | Brain-extracted image |
-| `m`  | `_tbxmask`          | Binary brain mask |
+| `m`  | `_tbxmask`          | Binary brain mask: the brain with the surrounding CSF (intracranial; its volume is the TIV) |
+| `i`  | `_tbxinnermask`      | Inner brain mask: the brain without the surrounding CSF, inside `_tbxmask`; with `b` also `_tbxinner` (image × inner mask) |
 | `a`  | `_aseg`              | ASEG: the TSEG model output (43 labels, FreeSurfer numbers), as in 0.2.x; kept for compatibility |
 | `t`  | `_tseg`              | TSEG, the TigerBx whole-brain segmentation: ASEG + 99 Unlabeled-Intracranial (TIV = all non-zero voxels) |
 | `c`  | `_ct`                | Cortical thickness map |

@@ -19,7 +19,7 @@ use clap::Parser;
 use std::path::{Path, PathBuf};
 
 /// Embedded models (compiled into the binary): TigerBx's defaults, from the modelhub release
-static EMBEDDED_TBX: &[u8] = include_bytes!("../models/mprage_tbx_v005_opt.onnx");
+static EMBEDDED_TBX: &[u8] = include_bytes!("../models/mprage_tbxdual_v007_opt.onnx");
 static EMBEDDED_TSEG: &[u8] = include_bytes!("../models/mprage_tseg_v0011_opt.onnx");
 static EMBEDDED_DGM: &[u8] = include_bytes!("../models/mprage_dgm12_v002_opt.onnx");
 static EMBEDDED_TREG: &[u8] = include_bytes!("../models/mprage_treg_v002.onnx");
@@ -30,7 +30,7 @@ static EMBEDDED_TEMPLATE: &[u8] = include_bytes!("../../tigerbx/template/mni_tem
 static EMBEDDED_TEMPLATE_TSEG: &[u8] = include_bytes!("../../tigerbx/template/mni_template_tseg.nii.gz");
 
 /// Postfixes TigerBx writes; inputs ending in one of them are earlier outputs, not new images.
-const OUTPUT_POSTFIXES: [&str; 9] = ["tbx", "tbxmask", "tseg", "dgm", "affine", "norm", "duope", "duope_field", "duope_disp"];
+const OUTPUT_POSTFIXES: [&str; 10] = ["tbx", "tbxmask", "tbxinnermask", "tseg", "dgm", "affine", "norm", "duope", "duope_field", "duope_disp"];
 
 /// tigerbx — TigerBx brain extraction, TSEG and template registration as a native executable
 ///
@@ -109,9 +109,13 @@ struct Args {
     #[arg(short = 'b', long)]
     tbx: bool,
 
-    /// Save the brain mask (_tbxmask)
+    /// Save the brain mask (_tbxmask; the brain with the surrounding CSF)
     #[arg(short = 'm', long)]
     tbxmask: bool,
+
+    /// Save the inner brain mask (_tbxinnermask; the brain without the surrounding CSF, inside _tbxmask)
+    #[arg(short = 'i', long)]
+    tbxinnermask: bool,
 
     /// Save the TSEG segmentation (_tseg; 43 structures + 99 Unlabeled-Intracranial; the model output, as
     /// tigerbx.run('t'))
@@ -136,7 +140,7 @@ struct Args {
     #[arg(long, value_enum, default_value_t = Intensity::Raw)]
     intensity: Intensity,
 
-    /// tBX ONNX model file (default: embedded mprage_tbx_v005_opt)
+    /// tBX ONNX model file (default: embedded mprage_tbxdual_v007_opt)
     #[arg(long)]
     tbx_model: Option<PathBuf>,
 
@@ -278,6 +282,7 @@ enum Intensity {
 struct Outputs {
     tbx: bool,
     tbxmask: bool,
+    tbxinnermask: bool,
     tseg: bool,
     dgm: bool,
     affine: bool,
@@ -344,7 +349,7 @@ fn init_onnxruntime() -> Result<Option<PathBuf>> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let other_pipelines = args.seg || args.norm || args.affine || args.all || args.tbx || args.tbxmask || args.tseg
+    let other_pipelines = args.seg || args.norm || args.affine || args.all || args.tbx || args.tbxmask || args.tbxinnermask || args.tseg
         || args.dgm || args.affine_out || args.norm_out || args.template || args.inspect || args.check;
     if args.dwimc {
         if other_pipelines || args.duope {
@@ -375,7 +380,7 @@ fn main() -> Result<()> {
         bail!("--reverse / --field / --ec-order / --dwimc-iters go with --dwimc");
     }
     if args.duope {
-        let others = args.seg || args.norm || args.affine || args.all || args.tbx || args.tbxmask || args.tseg
+        let others = args.seg || args.norm || args.affine || args.all || args.tbx || args.tbxmask || args.tbxinnermask || args.tseg
             || args.dgm || args.affine_out || args.norm_out || args.template || args.inspect || args.check;
         if others {
             bail!("--duope runs on its own; run the other pipelines / outputs separately");
@@ -413,7 +418,7 @@ fn main() -> Result<()> {
         bail!("No input files specified. Usage: tigerbx <input.nii.gz> [-o output_dir]");
     }
 
-    let others = args.seg || args.norm || args.affine || args.all || args.tbx || args.tbxmask || args.tseg
+    let others = args.seg || args.norm || args.affine || args.all || args.tbx || args.tbxmask || args.tbxinnermask || args.tseg
         || args.dgm || args.affine_out || args.norm_out;
     if args.template {
         if others || args.inspect {
@@ -436,6 +441,7 @@ fn main() -> Result<()> {
     let mut outputs = Outputs {
         tbx: args.tbx || seg || norm || args.affine,
         tbxmask: args.tbxmask,
+        tbxinnermask: args.tbxinnermask,
         tseg: args.tseg || seg,
         dgm: args.dgm,
         affine: args.affine_out,
@@ -444,7 +450,7 @@ fn main() -> Result<()> {
         merge_dgm: seg,
         intensity: args.intensity,
     };
-    if !(outputs.tbx || outputs.tbxmask || outputs.tseg || outputs.dgm || outputs.affine || outputs.affine_pipe || outputs.norm) {
+    if !(outputs.tbx || outputs.tbxmask || outputs.tbxinnermask || outputs.tseg || outputs.dgm || outputs.affine || outputs.affine_pipe || outputs.norm) {
         outputs.tbx = true;
     }
 
@@ -531,7 +537,7 @@ fn run_check(args: &Args, ort_lib: Option<&Path>) -> Result<()> {
         println!("GPU: {}", if inference::on_gpu() { "yes" } else { "no, the CPU is used" });
     }
     println!("embedded models:");
-    for (name, bytes) in [("mprage_tbx_v005_opt", EMBEDDED_TBX), ("mprage_tseg_v0011_opt", EMBEDDED_TSEG),
+    for (name, bytes) in [("mprage_tbxdual_v007_opt", EMBEDDED_TBX), ("mprage_tseg_v0011_opt", EMBEDDED_TSEG),
                           ("mprage_dgm12_v002_opt", EMBEDDED_DGM), ("mprage_treg_v002", EMBEDDED_TREG),
                           ("inspect_v003", EMBEDDED_INSPECT)] {
         println!("  {name:24} {:6.1} MB", bytes.len() as f64 / 1_048_576.0);
@@ -662,6 +668,12 @@ fn process_file(
     if outputs.tbxmask {
         let p = output_path(input, output_dir, "tbxmask");
         nifti_io::write_nifti_u8(&p, &header, &res.mask)?;
+        println!("  -> {}", p.display());
+    }
+    if outputs.tbxinnermask {
+        let inner = res.inner.as_ref().context("--tbxinnermask needs a dual mask tBX model (mode tbxdual)")?;
+        let p = output_path(input, output_dir, "tbxinnermask");
+        nifti_io::write_nifti_u8(&p, &header, inner)?;
         println!("  -> {}", p.display());
     }
     if let Some(tseg) = res.tseg.as_ref() {

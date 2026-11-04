@@ -133,7 +133,14 @@ def _infer_mask(model_ff, f, GPU, patch, brainmask_nib=None, tbx111=None, sessio
 
 
 def produce_tbxmask(model, f, GPU=False, patch=False, session=None):
-    """Run the tBX model and return the brain mask (nibabel image on the input grid)."""
+    """Run the tBX model and return the brain mask (nibabel image on the input grid). A dual mask model gives its
+    outer mask."""
+    return produce_tbxdual(model, f, GPU, patch, session)[0]
+
+
+def produce_tbxdual(model, f, GPU=False, patch=False, session=None):
+    """Run a tBX model -> (outer, inner) masks on the input grid. outer = the tBX brain mask (with the surrounding
+    CSF); inner (dual mask model, mode tbxdual) = the brain without that CSF, inside outer; None for a tbx model."""
     model_ff = lib_tool.get_model(model)
 
     output_nib, mask_nib_resp = _infer_mask(
@@ -142,7 +149,12 @@ def produce_tbxmask(model, f, GPU=False, patch=False, session=None):
     if not np.any(lib_tool.read_nib(mask_nib_resp) > 0):
         raise RuntimeError(f'tBX produced an empty brain mask for {f!r}.')
 
-    return output_nib
+    if lib_bx.get_mode(model_ff)[0] != 'tbxdual':
+        return output_nib, None
+    lab = np.asanyarray(output_nib.dataobj)
+    outer, inner = [nib.Nifti1Image((cond).astype(np.uint8), output_nib.affine, output_nib.header)
+                    for cond in (lab >= 1, lab == 2)]
+    return outer, inner
 
 
 def produce_mask(model, f, GPU=False, brainmask_nib=None, tbx111=None,
@@ -166,6 +178,7 @@ def _all_outputs_exist(f, output_dir, run_d, gz, common_folder=None):
     checks = {
         'tbxmask': 'tbxmask',
         'tbx':     'tbx',
+        'tbxinner': 'tbxinnermask',
         'aseg':    'aseg',
         'tseg':    'tseg',
         'dgm':     'dgm',
@@ -216,6 +229,7 @@ def run(argstring, input=None, output=None, model=None, verbose=0,
         raise ValueError('tigerbx.run: flag(s) ' + ', '.join(f"'{c}' ({REMOVED_FLAGS[c]})" for c in removed)
                          + ' have been removed.')
     args.tbxmask = 'm' in argstring
+    args.tbxinner = 'i' in argstring  # dual mask model: also the inner mask (_tbxinnermask; with 'b' _tbxinner)
     args.aseg = 'a' in argstring      # kept for 0.2.x scripts: the TSEG model output without label 99 (_aseg)
     args.tseg = 't' in argstring
     args.tbx = 'b' in argstring
@@ -310,8 +324,9 @@ def run_args(args):
         _logger.warning(' '.join(str(x) for x in msg))
 
     run_d.setdefault('aseg', False)
+    run_d.setdefault('tbxinner', False)
     if True not in [run_d['tbxmask'], run_d['aseg'], run_d['tseg'], run_d['tbx'], run_d['dgm'],
-                    run_d['ct'], run_d['patch']]:
+                    run_d['ct'], run_d['patch'], run_d['tbxinner']]:
         run_d['tbx'] = True
 
     if run_d['clean_onnx']:
@@ -354,6 +369,7 @@ def run_args(args):
                      if run_d.get(k) or (k == 'tseg' and run_d.get('aseg'))]
 
     result_accum = {f: [{}, {}] for f in input_file_list}
+    # the dual mask model gives the tBX mask (its outer mask, used by every later step) and, for 'i', the inner mask
     tbx_model_ff = lib_tool.get_model(omodel['tbx'])
 
     # ── Chunked loop ──────────────────────────────────────────────────────────
@@ -372,8 +388,8 @@ def run_args(args):
 
             ftemplate, _ = get_template(f, output_dir, args.gz, common_folder)
 
-            tbxmask_nib = produce_tbxmask(
-                omodel['tbx'], f, GPU=args.gpu, patch=run_d['patch'],
+            tbxmask_nib, inner_nib = produce_tbxdual(
+                tbx_model_ff, f, GPU=args.gpu, patch=run_d['patch'],
                 session=tbx_session)
 
             input_nib = load_nifti(f)
@@ -406,6 +422,21 @@ def run_args(args):
                     fn = save_nib(tbx_nib, ftemplate, 'tbx')
                     _dbg('Writing output file: ', fn)
                     rfd['tbx'] = fn
+
+            if run_d['tbxinner']:
+                if inner_nib is None:
+                    raise ValueError(f"flag 'i' needs a dual mask model (mode tbxdual), got {omodel['tbx']!r}")
+                rd['tbxinnermask'] = inner_nib
+                if save_outputs:
+                    rfd['tbxinnermask'] = save_nib(inner_nib, ftemplate, 'tbxinnermask')
+                if run_d['tbx']:
+                    arr = lib_tool.read_nib(input_nib) * lib_tool.read_nib(inner_nib)
+                    if lib_tool.check_dtype(arr, input_nib.dataobj.dtype):
+                        arr = arr.astype(input_nib.dataobj.dtype)
+                    inner_brain = nib.Nifti1Image(arr, input_nib.affine, input_nib.header)
+                    rd['tbxinner'] = inner_brain
+                    if save_outputs:
+                        rfd['tbxinner'] = save_nib(inner_brain, ftemplate, 'tbxinner')
 
             tbx_cache[f] = {
                 'tbxmask_nib':     tbxmask_nib,

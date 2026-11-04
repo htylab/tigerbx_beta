@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use ndarray::{Array3, ArrayD, Ix3};
+use ndarray::{s, Array3, ArrayD, Ix3};
 use nifti::NiftiHeader;
 use ort::session::Session;
 
@@ -26,8 +26,10 @@ const TBX_CROP_MIN_MM: f64 = 256.0;
 
 /// Results of one image, all on the input grid.
 pub struct BxResult {
-    /// tBX brain mask, u8 0 / 1
+    /// tBX brain mask, u8 0 / 1 (dual mask model: its outer mask, the brain with the surrounding CSF)
     pub mask: ArrayD<u8>,
+    /// dual mask model (TigerBx mode `tbxdual`): the inner mask (the brain without the surrounding CSF, inside `mask`)
+    pub inner: Option<ArrayD<u8>>,
     /// tBX brain = input x mask (scaled input values)
     pub brain: ArrayD<f64>,
     /// TSEG labels (FreeSurfer numbers, 99 = Unlabeled-Intracranial): the TSEG model output, as TigerBx `_tseg`;
@@ -77,12 +79,18 @@ pub fn run_bx(
     let min_n = zooms.map(|z| (TBX_CROP_MIN_MM / z).ceil() as usize);
     let cropped = resample::crop_where_min(&full, pad, min_n, |v| v != 0.0).unwrap_or(full);
     let model = resample::model_space(cropped, zooms);
-    let mask = inference::run_onnx(tbx_session, normalized(&model.data).view()).context("tBX inference failed")?;
-    let mask = postprocess::largest_connected_component_3d(&mask.into_dyn()).into_dimensionality::<Ix3>()?;
+    let (mask, inner) = if inference::output_channels(tbx_session) == Some(2) {
+        let (outer, inner) = tbx_dual(tbx_session, &model.data).context("tBX inference failed")?;
+        (outer, Some(inner))
+    } else {
+        let mask = inference::run_onnx(tbx_session, normalized(&model.data).view()).context("tBX inference failed")?;
+        (largest_component(mask)?, None)
+    };
     if !mask.iter().any(|&m| m > 0) {
         bail!("tBX produced an empty brain mask");
     }
     let mask = resample::nearest_to_grid(&mask, &model.affine, &input_affine, native.dim());
+    let inner = inner.map(|m| resample::nearest_to_grid(&m, &model.affine, &input_affine, native.dim()));
     let brain = ndarray::Zip::from(&native).and(&mask).map_collect(|&d, &m| if m > 0 { d } else { 0.0 });
 
     // ── TSEG and DGM12: the tBX brain in model space, cropped to the brain + 16 voxels ───────────────
@@ -129,10 +137,35 @@ pub fn run_bx(
 
     Ok(BxResult {
         mask: mask.into_dyn(),
+        inner: inner.map(|m| m.into_dyn()),
         brain: brain.into_dyn(),
         tseg: tseg.map(|a| a.into_dyn()),
         dgm: dgm.map(|d| d.into_dyn()),
     })
+}
+
+fn largest_component(mask: Array3<u8>) -> Result<Array3<u8>> {
+    Ok(postprocess::largest_connected_component_3d(&mask.into_dyn()).into_dimensionality::<Ix3>()?)
+}
+
+/// Dual brain mask model (TigerBx mode `tbxdual`, `lib_bx._tbxdual_labels`) -> (outer, inner) on the model grid. The
+/// input is scaled in f32 (as the model's reference inference) and padded at the end of each axis to a multiple of 16;
+/// the `labels` output is 0 background, 1 outer only, 2 inner. Outer and inner each keep their largest component, the
+/// inner one inside the outer.
+fn tbx_dual(session: &mut Session, x: &Array3<f64>) -> Result<(Array3<u8>, Array3<u8>)> {
+    if !inference::has_labels_output(session) {
+        bail!("dual mask model without a labels output");
+    }
+    let (h, w, d) = x.dim();
+    let xf = x.mapv(|v| v as f32);
+    let max_val = xf.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let up = |n: usize| n.div_ceil(16) * 16;
+    let mut input = Array3::<f32>::zeros((up(h), up(w), up(d)));
+    input.slice_mut(s![..h, ..w, ..d]).assign(&if max_val > 0.0 { xf.mapv(|v| v / max_val) } else { xf });
+    let lab = inference::run_onnx(session, input.view())?.slice(s![..h, ..w, ..d]).to_owned();
+    let outer = largest_component(lab.mapv(|l| (l >= 1) as u8))?;
+    let inner = ndarray::Zip::from(&lab).and(&outer).map_collect(|&l, &o| (l == 2 && o > 0) as u8);
+    Ok((outer, largest_component(inner)?))
 }
 
 /// Model input: the volume divided by its maximum (TigerBx `/ max`), as f32.

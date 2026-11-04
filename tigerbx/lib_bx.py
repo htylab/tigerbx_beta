@@ -32,7 +32,7 @@ label_all['wmp'] = (  251,  252,  253,  254,  255, 3001, 3002, 3003, 3005, 3006,
 #nib.Nifti1Header.quaternion_threshold = -100
 
 
-SEG_MODES = ('tbx', 'tseg', 'dkt', 'dgm12', 'wmp', 'seg3')
+SEG_MODES = ('tbx', 'tbxdual', 'tseg', 'dkt', 'dgm12', 'wmp', 'seg3')
 
 
 def get_mode(model_ff):
@@ -56,6 +56,28 @@ def getLarea(input_mask):
         mask = input_mask
     return mask
 
+def _tbxdual_labels(model_ff, image, GPU, patch, session):
+    """Dual brain mask model (mode tbxdual, two independent sigmoid channels: outer = brain with the surrounding CSF,
+    inner = brain without it): 0 background, 1 outer only, 2 inner. The input is padded at the end of each axis to a
+    multiple of 16; outer and inner each keep their largest connected component, the inner one inside the outer."""
+    shape = image.shape[-3:]
+    pad = [(-n) % 16 for n in shape]
+    image = np.pad(image, [(0, 0), (0, 0)] + [(0, q) for q in pad])
+    if not patch and has_labels_output(session):
+        lab = predict_labels(session, image)[0]
+    else:
+        if patch:
+            logits = predict(model_ff, image, GPU, mode='patch', session=session)[0]
+        else:
+            logits = predict(model_ff, image, GPU, session=session)[0]
+        outer = logits[0] >= 0
+        lab = outer.astype(np.uint8) + (outer & (logits[1] >= 0))
+    lab = np.asarray(lab).reshape(image.shape[-3:])[:shape[0], :shape[1], :shape[2]]
+    outer = getLarea(lab >= 1)
+    inner = getLarea((lab == 2) & outer)
+    return outer.astype(np.uint8) + inner.astype(np.uint8)
+
+
 def run(model_ff, input_nib, GPU, patch=False, session=None):
 
     seg_mode, _, model_str = get_mode(model_ff)
@@ -73,6 +95,12 @@ def run(model_ff, input_nib, GPU, patch=False, session=None):
     # inference blends logits across patches, so it always uses them.
     if not patch and session is None:
         session = create_session(model_ff, GPU)
+    if seg_mode == 'tbxdual':                  # scaled in float32, as the model's reference inference
+        image = np.nan_to_num(data.astype(np.float32))[None, None]
+        if image.max() > 0:
+            image = image / image.max()
+        return nib.Nifti1Image(_tbxdual_labels(model_ff, image, GPU, patch, session).astype(int),
+                               input_nib.affine, input_nib.header)
     if not patch and has_labels_output(session):
         mask_pred = predict_labels(session, image)[0]
     else:

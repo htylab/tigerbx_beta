@@ -14,6 +14,7 @@ drop-in replacement (`model={'tseg': 'my.onnx'}` in `tigerbx.run()`, `seg_model=
 | mode | channels (incl. background) | normalisation | activation | label table |
 |---|---|---|---|---|
 | `tbx` | 1 | `/ max` | logit ≥ 0 (sigmoid ≥ 0.5), largest component | — |
+| `tbxdual` | 2 (outer, inner; independent, no background) | `/ max`, input padded to a multiple of 16 | logit ≥ 0 per channel, largest component each, inner inside outer | — |
 | `tseg` | 44 | `/ max` | argmax | `label_all['tseg']` |
 | `dgm12` | 13 | `/ max` | argmax | 1..12 |
 | `dkt`, `wmp`, `seg3` | 63 / 74 / 4 | `/ max` | argmax | `label_all[mode]` |

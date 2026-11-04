@@ -5,7 +5,7 @@ Every default model in `tigerbx/core/models.py` can be traced to the step that p
 
 | Model (`models.py`) | Released file | Built by | From |
 |---|---|---|---|
-| `TBX` | `mprage_tbx_v005_opt.onnx` | `python -m tigerbx.dev.build_models --only TBX` | `mprage_bet_v005_mixsynthv4.onnx` |
+| `TBX` | `mprage_tbxdual_v007_opt.onnx` | optimised with `onnx_optimize` before release (base export not yet in `build_models`) | PyTorch checkpoint |
 | `TSEG` | `mprage_tseg_v0011_opt.onnx` | `python -m tigerbx.dev.build_models --only TSEG` | `mprage_aseg43_v0011_allseg.onnx` |
 | `DGM` | `mprage_dgm12_v002_opt.onnx` | `python -m tigerbx.dev.build_models --only DGM` | `mprage_dgm12_v002_mix6.onnx` |
 | `HLC` | `mprage_hlc_v004_opt.onnx` | `python -m tigerbx.dev.build_models --only HLC` | `mprage_hlc_v004_resunetplusT2.onnx` |

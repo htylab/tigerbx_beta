@@ -108,11 +108,22 @@ pub fn run_options() -> Result<ort::session::RunOptions> {
     Ok(opts)
 }
 
+/// Output channels of a model's first output (its logits), when the model declares them (e.g. 2 for the dual brain mask
+/// model, TigerBx mode `tbxdual`).
+pub fn output_channels(session: &Session) -> Option<i64> {
+    session.outputs().first()?.dtype().tensor_shape().and_then(|s| s.get(1).copied()).filter(|&c| c > 0)
+}
+
+/// Whether the model has a ``labels`` output (tigerbx.dev.onnx_optimize --labels).
+pub fn has_labels_output(session: &Session) -> bool {
+    session.outputs().iter().any(|o| o.name() == LABELS_OUTPUT)
+}
+
 /// Run inference on a pre-built session and return a label per voxel.
 ///
 /// Input: 3D f32 view (H, W, D), passed to ONNX Runtime as (1, 1, H, W, D) without copying when it is contiguous.
 /// Output (H, W, D) u8: a model with a ``labels`` output (tigerbx.dev.onnx_optimize --labels, e.g. the embedded
-/// mprage_tbx_v005_opt / mprage_tseg_v0011_opt) returns it and only that output is requested; otherwise the
+/// mprage_tbxdual_v007_opt / mprage_tseg_v0011_opt) returns it and only that output is requested; otherwise the
 /// logits [1, C, H, W, D] give logit >= 0 (C = 1, i.e. sigmoid >= 0.5) or the argmax over channels.
 pub fn run_onnx(session: &mut Session, input: ArrayView3<f32>) -> Result<Array3<u8>> {
     let input = input.as_standard_layout();

@@ -71,7 +71,7 @@ present), as workflow artifacts on every change under `rust/` and attached to th
 
 ```bash
 mkdir -p models
-for m in mprage_tbx_v005_opt mprage_tseg_v0011_opt mprage_dgm12_v002_opt mprage_treg_v002 inspect_v003; do
+for m in mprage_tbxdual_v007_opt mprage_tseg_v0011_opt mprage_dgm12_v002_opt mprage_treg_v002 inspect_v003; do
   curl -L -o models/$m.onnx https://github.com/htylab/tigerbx/releases/download/modelhub/$m.onnx
 done
 cargo build --release
@@ -101,7 +101,7 @@ tigerbx --duope ap.nii.gz pa.nii.gz -o out/ --series bold.nii.gz   # pipeline du
 tigerbx --duope ap.nii.gz pa.nii.gz --pe AP --readout 0.05 --save-field  # no JSON sidecars; + _duope_field (Hz)
 tigerbx --dwimc dwi.nii.gz -o out/ --reverse pa.nii.gz  # pipeline dwimc: <input>_dwimc, .bval, .bvec, .csv
 tigerbx data/ -o out/ --seg -m          # output options add to a pipeline: + _tbxmask
-tigerbx data/*.nii.gz -o out/ -m        # single outputs: -b _tbx, -m _tbxmask, -t _tseg, -d _dgm, -A _affine, -n _norm
+tigerbx data/*.nii.gz -o out/ -m        # single outputs: -b _tbx, -m _tbxmask, -i _tbxinnermask, -t _tseg, -d _dgm, -A _affine, -n _norm
 tigerbx data/ -o out/ -t -A -j 8        # TSEG + _affine only, 8 intra-op threads (default: 70% of the available CPUs)
 tigerbx data/ -o out/ --norm --intensity gnorm  # T1 tissue intensities (CSF 1/3, GM 2/3, WM 1); raw (default) or minmax
 tigerbx T1w.nii.gz --tseg-model other_tseg.onnx   # other models (--tbx-/--tseg-/--dgm-/--treg-/--inspect-model)
@@ -123,7 +123,7 @@ from the CPU); `TIGERBX_TF32=0` turns it off, and the GPU then matches the CPU. 
 `TIGERBX_TF32=0` CPU and GPU agree (a seg18 scan: tBX mask identical, 4 `_tseg` voxels differ), since the optimised
 models compute GroupNorm statistics in stages (see `tigerbx.dev.onnx_optimize`).
 
-Earlier outputs (`_tbx`, `_tbxmask`, `_tseg`, `_dgm`, `_affine`, `_norm`) in an input folder are skipped; a failing input is reported and the
+Earlier outputs (`_tbx`, `_tbxmask`, `_tbxinnermask`, `_tseg`, `_dgm`, `_affine`, `_norm`) in an input folder are skipped; a failing input is reported and the
 batch continues.
 
 `TIGERBX_DUMP_REG=<dir>` also writes `<stem>_M.txt` (4x4 world matrix template -> input) and `<stem>_grid.f32`
