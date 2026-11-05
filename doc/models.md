@@ -44,16 +44,12 @@ Runtime; patch inference (`p`) still uses the logits, which must stay the first 
 
 ## Optimising an exported model
 
-```
-python -m tigerbx.dev.onnx_optimize model.onnx model_opt.onnx --labels --shape 1,1,160,192,160
-```
-
-rewrites each exported GroupNorm / InstanceNorm into ops that ONNX Runtime runs faster on CPU (same result: two-pass
-variance, folded affine), adds the `labels` output, and compares both models on a random input (largest logit
-difference, run time). Needs the `onnx` package. For the 0.3.0 tBX and TSEG models it gives 1.2-1.3x faster
-inference and, together with the `labels` output, about 1.7x faster TSEG inference + post-processing, with identical
-masks / labels on real T1w images. Always check the speed: a model with few, small normalisation layers (e.g. tReg
-registration) can get slower.
+The model build tools (outside this repository) rewrite each exported GroupNorm / InstanceNorm into ops that ONNX
+Runtime runs faster on CPU (same result: two-pass variance, folded affine), add the `labels` output, and compare both
+models on a random input (largest logit difference, run time). For the 0.3.0 tBX and TSEG models this gives 1.2-1.3x
+faster inference and, together with the `labels` output, about 1.7x faster TSEG inference + post-processing, with
+identical masks / labels on real T1w images. Always check the speed: a model with few, small normalisation layers
+can get slower.
 
 ## Export checklist
 
@@ -61,7 +57,7 @@ registration) can get slower.
 - Check ONNX vs. PyTorch on at least two odd shapes (e.g. 141×180×138 and 160×201×171).
 - Store provenance in `metadata_props` (architecture, iteration, code hash; never data, see AGENTS.md): the
   repository's test models are otherwise indistinguishable except by weight diffs.
-- Run `tigerbx.dev.onnx_optimize ... --labels` (above) and check that the labels / masks of a few real images match
+- Optimise it (above) and check that the labels / masks of a few real images match
   the unoptimised model.
 - Validate with `tigerbx.val(task='tseg', seg_model='mprage_tseg_<ver>_<tag>.onnx', full=True, GPU=True)`
   (see [validation.md](validation.md)).

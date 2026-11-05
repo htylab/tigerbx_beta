@@ -91,7 +91,7 @@ def run(model_ff, input_nib, GPU, patch=False, session=None):
 
     # Only the label of each voxel is needed: tBX thresholds sigmoid(logit) at 0.5, i.e. logit >= 0, and the
     # segmentation models take the argmax, which softmax does not change. A model with a ``labels`` output
-    # (tigerbx.dev.onnx_optimize --labels) computes that itself, so the logits never leave ONNX Runtime. Patch
+    # (added when the model is optimised) computes that itself, so the logits never leave ONNX Runtime. Patch
     # inference blends logits across patches, so it always uses them.
     if not patch and session is None:
         session = create_session(model_ff, GPU)

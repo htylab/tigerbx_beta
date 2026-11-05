@@ -118,7 +118,7 @@ Run before a release and after changes to `bx`, `core/resample`, `core/numreg` o
   labels `seg18`, `seg123` and `reg60` may appear. Check every message, diff and exported model before pushing.
 - Model files are downloaded via `lib_tool.get_model()` and cached locally; a release model name must match its
   sha256 in `tigerbx/core/models.py`, the one place for the default model names (see doc/developer_guide.md §7).
-  How each released model is built: doc/model_build.md (`python -m tigerbx.dev.build_models` rebuilds the `_opt` ones).
+  Model build tools (network definitions, ONNX export and optimisation) live outside this repository.
 - Put temporary artifacts under `temp/`.
 
 ## Don’ts (quick list)

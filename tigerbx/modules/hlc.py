@@ -38,7 +38,7 @@ def hlc(input=None, output=None, model=None, save='h', GPU=False, gz=True, patch
     args.verbose = verbose
     return run_args(args)
 
-# Outputs of an HLC model optimised with tigerbx.dev.onnx_optimize --heads
+# Outputs of an HLC model optimised with --heads
 # parc:0:57:argmax,lr:57:60:argmax,dw:60:63:argmax,ct:63:64:slice,cgw:64:67:slice. Without them (or with patch
 # inference, which blends logits) the 67-channel logits are used. The ct and cgw heads are not used (thickness:
 # tigerbx.run('c'); CSF / GM / WM maps from TSEG: core.cgw).

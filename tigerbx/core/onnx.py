@@ -16,7 +16,7 @@ TF32_ENV = "TIGERBX_TF32"
 DEFAULT_ORT_INTRA_THREADS_RATIO = 0.7
 DEFAULT_ORT_INTER_THREADS = 1
 # Optional second output of a segmentation model: argmax of the logits over channels, as uint8 (added by
-# tigerbx.dev.onnx_optimize --labels). Requesting only this output avoids returning the full logits array.
+# the model optimiser's --labels). Requesting only this output avoids returning the full logits array.
 # On the GPU it is removed from the graph instead (see _keep_outputs).
 LABELS_OUTPUT = "labels"
 _GPU_FALLBACK_WARNED = False

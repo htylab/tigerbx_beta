@@ -121,7 +121,7 @@ from the CPU); `TIGERBX_TF32=0` turns it off, and the GPU then matches the CPU. 
 "No execution plans support the graph" and falls back to another algorithm (results are fine).
 `--seg -g` on seg18: ~6 s per subject; a GPU peak of ~16 GB per process was measured on an H200. With
 `TIGERBX_TF32=0` CPU and GPU agree (a seg18 scan: tBX mask identical, 4 `_tseg` voxels differ), since the optimised
-models compute GroupNorm statistics in stages (see `tigerbx.dev.onnx_optimize`).
+models compute GroupNorm statistics in stages.
 
 Earlier outputs (`_tbx`, `_tbxmask`, `_tbxinnermask`, `_tseg`, `_dgm`, `_affine`, `_norm`) in an input folder are skipped; a failing input is reported and the
 batch continues.
