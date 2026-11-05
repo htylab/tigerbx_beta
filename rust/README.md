@@ -14,7 +14,7 @@ that plane whatever the floating-point rounding of the affine inverse; a voxel o
 other label (float32 / float64 arithmetic of a near tie).
 
 Registration: a Rust port of numreg (Mattes MI, symmetric cost, 6 / 3 / 1.5 mm pyramid, multi-start L-BFGS) gives
-`_affine` (tBX brain on the template grid, min-max normalised), then tReg (`mprage_treg_v002`) gives `_norm`.
+`_affine` (tBX brain on the template grid, min-max normalised), then tReg (`mprage_treg_v003`) gives `_norm`.
 As in Python, `_affine` and `_norm` (affine + tReg warp composed) are sampled once from the input grid with a cubic
 B-spline clipped to the input range, the tReg input trilinearly; with the same matrix and warp they match
 `tigerbx.core.numreg.resample` within 5e-6.
@@ -71,7 +71,7 @@ present), as workflow artifacts on every change under `rust/` and attached to th
 
 ```bash
 mkdir -p models
-for m in mprage_tbxdual_v007_opt mprage_tseg_v0011_opt mprage_dgm12_v002_opt mprage_treg_v002 inspect_v003; do
+for m in mprage_tbxdual_v007_opt mprage_tseg_v0011_opt mprage_dgm12_v002_opt mprage_treg_v003 inspect_v003; do
   curl -L -o models/$m.onnx https://github.com/htylab/tigerbx/releases/download/modelhub/$m.onnx
 done
 cargo build --release

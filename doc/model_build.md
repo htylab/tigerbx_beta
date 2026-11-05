@@ -11,6 +11,7 @@ Every default model in `tigerbx/core/models.py` can be traced to the step that p
 | `HLC` | `mprage_hlc_v004_opt.onnx` | `python -m tigerbx.dev.build_models --only HLC` | `mprage_hlc_v004_resunetplusT2.onnx` |
 | `GDM` | `vdm_unet3d_v002_opt.onnx` | `python -m tigerbx.dev.build_models --only GDM` | `vdm_unet3d_v002.onnx` |
 | `INSPECT` | `inspect_v003.onnx` | `python -m tigerbx.dev.export_inspect model.pt inspect_v003.onnx` | PyTorch weights (state dict of `export_inspect.network()`) |
+| `TREG` | `mprage_treg_v003.onnx` | `python -m tigerbx.dev.export_treg weights.pth mprage_treg_v003.onnx` | PyTorch weights (state dict of `export_treg.network()`) |
 | `VFA` | `mprage_reg_v005_vfa.onnx` | the low-memory VFA export (outside this repository) | PyTorch checkpoint |
 | `CT`, `VMNET`, `AFFINE_NET`, `EMBED` | as listed | earlier exports | — |
 
@@ -34,6 +35,12 @@ weights gives outputs identical to `inspect_v003.onnx`. The weights are kept pri
 the maintainers).
 
 ## tReg
+
+`mprage_treg_v003.onnx` (the default) is exported in this repository: `tigerbx.dev.export_treg` holds the network
+definition (a tBX U-Net shared by both images gives the features; at each level, coarse to fine, a softmax over the
+cosine similarities of the 27 neighbour offsets gives the displacement) and the export. Its weights are kept
+privately with the base exports (ask the maintainers). It is released as the plain fp32 export: `onnx_optimize`
+(staged GroupNorm) gave only a 1.06x CPU speed-up at a 0.02-voxel change of the grid, so it is not used.
 
 `mprage_treg_v001.onnx` and `mprage_treg_v002.onnx` are exported from their PyTorch checkpoints with a low-memory
 matching step (the 27 neighbour similarities computed one shift at a time instead of a [27 x C] candidate tensor;

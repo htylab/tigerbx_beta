@@ -13,8 +13,9 @@ CT = 'mprage_mix_ct.onnx'
 HLC = 'mprage_hlc_v004_opt.onnx'
 # tReg: the deformable template registration (reg plan step 'D', norm, template; embed uses v001's encoder).
 # v001 = mprage_reg_v005_vfa (the same file; the full-resolution feature matching computes the 27 neighbour
-# similarities one shift at a time: low peak memory), v002 = the same network trained for EPI as well
-TREG = 'mprage_treg_v002.onnx'
+# similarities one shift at a time: low peak memory), v002 = the same network trained for EPI as well, v003 = our own
+# network (shared tBX U-Net features + per-level softmax matching; tigerbx.dev.export_treg), trained for EPI as well
+TREG = 'mprage_treg_v003.onnx'
 VMNET = 'mprage_reg_v003_train.onnx'          # reg plan V
 AFFINE_NET = 'mprage_affine_v002_train.onnx'  # affine_type 'C2FViT'
 EMBED = 'mprage_embed_v001_vfa.onnx'
@@ -40,6 +41,7 @@ SHA256 = {
     'mprage_treg_v001.onnx': 'a47961e51a4a26142700d17b0b2dc60fdff2b2f9dd0dc3977d8bf54a3c849b33',
     'mprage_treg_v002.onnx': 'e6fd4edc5e6bae3312f557776acd181df1da65f0433f327e737d82c7513fbdb8',
     'mprage_tbxdual_v007_opt.onnx': 'c88199b70674c9db172932cbdc4211dfbaf7fd060928316ae204c786dea88c42',
+    'mprage_treg_v003.onnx': 'a74b2e83b5bf7f2d653c1f05db0797ef2d5f054a76b53bad70852e96c2320443',
     'mprage_tbx_v005_opt.onnx': '1fdb8ef2c36d1e2dc90e8987e4a9898d6399bb5f3b616d698bb5d192c8e5afa8',
     'mprage_tseg_v0011_opt.onnx': '67b7f553dfd99363f3f89268536986d24d1b79e9ce60760dc4e0ee969f755fe2',
     'vdm_unet3d_v002.onnx': '9357b40da479f4dc85efe2616cab02ad5ffe7f238221070a3769d767a968a97f',

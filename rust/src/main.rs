@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 static EMBEDDED_TBX: &[u8] = include_bytes!("../models/mprage_tbxdual_v007_opt.onnx");
 static EMBEDDED_TSEG: &[u8] = include_bytes!("../models/mprage_tseg_v0011_opt.onnx");
 static EMBEDDED_DGM: &[u8] = include_bytes!("../models/mprage_dgm12_v002_opt.onnx");
-static EMBEDDED_TREG: &[u8] = include_bytes!("../models/mprage_treg_v002.onnx");
+static EMBEDDED_TREG: &[u8] = include_bytes!("../models/mprage_treg_v003.onnx");
 static EMBEDDED_INSPECT: &[u8] = include_bytes!("../models/inspect_v003.onnx");
 /// TigerBx's bundled registration template (same file as the Python package)
 static EMBEDDED_TEMPLATE: &[u8] = include_bytes!("../../tigerbx/template/mni_template.nii.gz");
@@ -152,7 +152,7 @@ struct Args {
     #[arg(long)]
     dgm_model: Option<PathBuf>,
 
-    /// tReg registration ONNX model file (default: embedded mprage_treg_v002)
+    /// tReg registration ONNX model file (default: embedded mprage_treg_v003)
     #[arg(long)]
     treg_model: Option<PathBuf>,
 
@@ -538,7 +538,7 @@ fn run_check(args: &Args, ort_lib: Option<&Path>) -> Result<()> {
     }
     println!("embedded models:");
     for (name, bytes) in [("mprage_tbxdual_v007_opt", EMBEDDED_TBX), ("mprage_tseg_v0011_opt", EMBEDDED_TSEG),
-                          ("mprage_dgm12_v002_opt", EMBEDDED_DGM), ("mprage_treg_v002", EMBEDDED_TREG),
+                          ("mprage_dgm12_v002_opt", EMBEDDED_DGM), ("mprage_treg_v003", EMBEDDED_TREG),
                           ("inspect_v003", EMBEDDED_INSPECT)] {
         println!("  {name:24} {:6.1} MB", bytes.len() as f64 / 1_048_576.0);
     }
